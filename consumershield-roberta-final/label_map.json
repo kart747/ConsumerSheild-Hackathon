@@ -1,0 +1,9 @@
+{
+  "Forced Action": 0,
+  "Misdirection": 1,
+  "Obstruction": 2,
+  "Scarcity": 3,
+  "Sneaking": 4,
+  "Social Proof": 5,
+  "Urgency": 6
+}
