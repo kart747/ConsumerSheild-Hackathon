@@ -26,6 +26,8 @@ const BERT_LABEL_MAP = {
 };
 
 const REPORT_PAGE_URL = chrome.runtime.getURL('report.html');
+import lawMapping from './utils/lawMapping.js';
+import { generateComplaintPDF } from './utils/generatePDF.js';
 const EXTENSION_ENABLED_KEY = 'consumershield_enabled';
 const BACKEND_URL_KEY = 'consumershield_backend_url';
 const BACKEND_DEFAULT_URLS = [
@@ -47,6 +49,69 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupActions();
   await loadAndRender();
 });
+
+function normalizeComplaintIssueName(value) {
+  const raw = String(value || '').trim();
+  const lower = raw.toLowerCase();
+
+  if (/hidden|charge|price|cost/.test(lower)) return 'Hidden Charges';
+  if (/subscription|continuity|renewal/.test(lower)) return 'Subscription Trap';
+  if (/dark|pattern|manipulative/.test(lower)) return 'Dark Patterns';
+  if (/privacy|data|tracking/.test(lower)) return 'Data Privacy Violation';
+  return raw.replace(/[_\-]/g, ' ').replace(/\s+/g, ' ').replace(/(^|\s)\S/g, (match) => match.toUpperCase());
+}
+
+function collectComplaintIssues(analysis) {
+  const patterns = Array.isArray(analysis?.manipulation?.patterns) ? analysis.manipulation.patterns : [];
+  const items = patterns
+    .map((pattern) => pattern.name || pattern.type || '')
+    .filter(Boolean)
+    .map(normalizeComplaintIssueName);
+
+  if (items.length) {
+    return [...new Set(items)];
+  }
+
+  const fallback = [];
+  if (analysis?.privacy?.policy?.thirdPartySharing) fallback.push('Hidden Charges');
+  if (analysis?.privacy?.trackers?.length) fallback.push('Data Privacy Violation');
+
+  return fallback.length ? [...new Set(fallback)] : ['No detected issues yet'];
+}
+
+function buildComplaintLaws(issues) {
+  const laws = new Set();
+  issues.forEach((issue) => {
+    const mapped = lawMapping[issue];
+    if (Array.isArray(mapped)) {
+      mapped.forEach((law) => laws.add(law));
+    }
+  });
+  return [...laws];
+}
+
+function buildComplaintEvidence(analysis) {
+  const patterns = Array.isArray(analysis?.manipulation?.patterns) ? analysis.manipulation.patterns : [];
+  const evidence = patterns
+    .map((pattern) => pattern.name || pattern.description || pattern.type)
+    .filter(Boolean)
+    .join(' | ');
+  return evidence || 'Detected via extension. Evidence is based on page analysis and browser scan results.';
+}
+
+function calculateRiskScore(analysis) {
+  if (!analysis) return 0;
+  const privacyScore = Number(analysis.privacy?.riskScore || 0);
+  const manipulationScore = Number(analysis.manipulation?.riskScore || 0);
+  const score = Math.max(privacyScore, manipulationScore, 0);
+  return Math.round(Math.max(0, Math.min(10, score)) * 10);
+}
+
+function complaintSeverity(score) {
+  if (score <= 40) return 'Low';
+  if (score <= 70) return 'Medium';
+  return 'High';
+}
 
 function setupTabs() {
   document.querySelectorAll('.tab').forEach((tab) => {
@@ -92,6 +157,54 @@ function setupActions() {
     });
     setTimeout(loadAndRender, 1500);
   });
+
+  const generateButton = document.getElementById('btn-generate');
+  if (generateButton) {
+    generateButton.addEventListener('click', async () => {
+      if (!extensionEnabled) {
+        alert('Protection is OFF. Turn it ON to generate a complaint.');
+        return;
+      }
+
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.url) return;
+
+      const domain = normalizeDomain(tab.url);
+      chrome.storage.local.get([domain], async (result) => {
+        const analysis = result[domain];
+        if (!analysis) {
+          alert('No analysis available yet. Rescan the page first.');
+          return;
+        }
+
+        const issues = collectComplaintIssues(analysis);
+        const laws = buildComplaintLaws(issues);
+        const company = tab.title || domain || 'Website';
+        const pdfData = {
+          name: 'Anonymous',
+          company,
+          analysis,
+          issues: issues.filter((item) => item !== 'No detected issues yet'),
+          laws,
+          severity: complaintSeverity(calculateRiskScore(analysis)),
+          evidence: buildComplaintEvidence(analysis),
+        };
+
+        console.debug('Complaint PDF generation data:', pdfData);
+
+        try {
+          await generateComplaintPDF(pdfData);
+          showToast('Complaint PDF generated and downloaded successfully.');
+        } catch (error) {
+          console.error('Complaint PDF generation failed:', error);
+          alert('Unable to generate the complaint PDF. See the extension console for details.');
+        }
+      });
+    });
+    console.debug('Generate Complaint button handler attached');
+  } else {
+    console.warn('Generate Complaint button not found in popup DOM');
+  }
 
   document.getElementById('btn-report')?.addEventListener('click', async () => {
     if (!extensionEnabled) {
@@ -142,6 +255,19 @@ function notifyExtensionEnabledChange(enabled) {
       // Background may be restarting. Ignore transient messaging failures.
     }
   });
+}
+
+function showToast(message) {
+  const toast = document.getElementById('toast-message');
+  if (!toast) return;
+
+  toast.textContent = message;
+  toast.classList.add('toast-visible');
+
+  window.clearTimeout(showToast.hideTimeout);
+  showToast.hideTimeout = window.setTimeout(() => {
+    toast.classList.remove('toast-visible');
+  }, 3200);
 }
 
 function renderProtectionState() {

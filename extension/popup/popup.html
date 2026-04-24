@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Consumer Shield</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="popup-shell">
+    <header class="popup-header">
+      <div class="popup-title">
+        <span class="popup-icon">🛡️</span>
+        <div>
+          <h1>Consumer Shield</h1>
+          <p>Risk summary for this page</p>
+        </div>
+      </div>
+      <div class="status-pill" id="status-pill">Loading…</div>
+    </header>
+
+    <section class="score-panel">
+      <div class="score-label">Risk Score</div>
+      <div class="score-value" id="risk-score">0</div>
+      <div class="score-badge" id="risk-label">Safe</div>
+      <div class="score-subtext" id="site-name">Website analysis unavailable</div>
+    </section>
+
+    <section class="issues-panel">
+      <div class="section-heading">Detected Issues</div>
+      <ul class="issue-list" id="issue-list">
+        <li class="issue-item">Reading extension data…</li>
+      </ul>
+    </section>
+
+    <section class="actions-panel">
+      <button class="btn btn-primary" id="btn-generate">📄 Generate Complaint</button>
+      <button class="btn btn-secondary" id="btn-report">📊 View Full Report</button>
+    </section>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
