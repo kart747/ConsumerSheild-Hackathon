@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">ConsumerShield uses accessibility services to read and analyze screen text to detect deceptive design patterns.</string>
+</resources>
