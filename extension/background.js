@@ -418,6 +418,54 @@ chrome.webRequest.onBeforeRequest.addListener(
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[ConsumerShield] Background received action:', request.action);
 
+  if (request.action === 'priceSample') {
+    const sample = request.data || {};
+    const productId = String(sample.productId || '').trim();
+    const domain = String(sample.domain || '').trim();
+    if (!productId || !domain || !Number.isFinite(Number(sample.currentPrice))) {
+      sendResponse({ success: false, reason: 'invalid_sample' });
+      return true;
+    }
+
+    const historyKey = buildPriceHistoryKey(domain, productId);
+    chrome.storage.local.get([historyKey], (result) => {
+      const history = Array.isArray(result[historyKey]) ? result[historyKey] : [];
+      const updated = appendPriceSample(history, sample);
+      const alert = evaluatePriceAlert(updated, sample);
+
+      const payload = {
+        [historyKey]: updated,
+        [buildPriceAlertKey(domain, productId)]: alert,
+      };
+      chrome.storage.local.set(payload, () => {
+        sendResponse({ success: true, historyCount: updated.length, alert });
+      });
+    });
+    return true;
+  }
+
+  if (request.action === 'getPriceHistory') {
+    const domain = String(request.domain || '').trim();
+    const productId = String(request.productId || '').trim();
+    const historyKey = buildPriceHistoryKey(domain, productId);
+    chrome.storage.local.get([historyKey], (result) => {
+      sendResponse({
+        history: Array.isArray(result[historyKey]) ? result[historyKey] : [],
+      });
+    });
+    return true;
+  }
+
+  if (request.action === 'getPriceAlert') {
+    const domain = String(request.domain || '').trim();
+    const productId = String(request.productId || '').trim();
+    const alertKey = buildPriceAlertKey(domain, productId);
+    chrome.storage.local.get([alertKey], (result) => {
+      sendResponse({ alert: result[alertKey] || null });
+    });
+    return true;
+  }
+
   if (request.action === 'getNetworkTrackers') {
     const tabId = sender.tab?.id;
     const traffic = typeof tabId === 'number' ? tabTraffic.get(tabId) : null;
@@ -578,6 +626,75 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   return true;
 });
+
+function buildPriceHistoryKey(domain, productId) {
+  return `price_history:${domain}:${productId}`;
+}
+
+function buildPriceAlertKey(domain, productId) {
+  return `price_alert:${domain}:${productId}`;
+}
+
+function appendPriceSample(history, sample) {
+  const maxEntries = 300;
+  const nowTs = Number(sample.ts || Date.now());
+  const latest = history[history.length - 1];
+  if (latest && Number(latest.currentPrice) === Number(sample.currentPrice)) {
+    const delta = Math.abs(nowTs - Number(latest.ts || 0));
+    if (delta < 6 * 60 * 60 * 1000) {
+      return history;
+    }
+  }
+
+  const entry = {
+    currentPrice: Number(sample.currentPrice),
+    oldPrice: Number.isFinite(Number(sample.oldPrice)) ? Number(sample.oldPrice) : null,
+    displayedDiscount: Number.isFinite(Number(sample.displayedDiscount)) ? Number(sample.displayedDiscount) : null,
+    url: sample.url || '',
+    ts: nowTs,
+  };
+
+  const trimmed = history.concat(entry).slice(-maxEntries);
+  return trimmed;
+}
+
+function evaluatePriceAlert(history, sample) {
+  const currentPrice = Number(sample.currentPrice);
+  if (!Number.isFinite(currentPrice)) return null;
+
+  const nowTs = Number(sample.ts || Date.now());
+  const oneWeekAgo = nowTs - 7 * 24 * 60 * 60 * 1000;
+  const recent = history.filter((item) => Number(item.ts || 0) >= oneWeekAgo);
+  if (recent.length < 2) {
+    return {
+      flagged: false,
+      reason: 'insufficient_history',
+      currentPrice,
+    };
+  }
+
+  const recentPrices = recent.map((item) => Number(item.currentPrice)).filter(Number.isFinite);
+  const lowest7d = Math.min(...recentPrices);
+  const highest7d = Math.max(...recentPrices);
+  const hasDiscount = Number.isFinite(Number(sample.oldPrice))
+    ? Number(sample.oldPrice) > currentPrice
+    : Number.isFinite(Number(sample.displayedDiscount)) && Number(sample.displayedDiscount) >= 10;
+
+  const deltaPct = lowest7d > 0 ? ((currentPrice - lowest7d) / lowest7d) * 100 : 0;
+  const flagged = Boolean(hasDiscount && deltaPct >= 12);
+
+  return {
+    flagged,
+    currentPrice,
+    lowest7d,
+    highest7d,
+    deltaPct: Number(deltaPct.toFixed(1)),
+    message: flagged
+      ? `Price was ₹${Math.round(lowest7d)} in the last 7 days, now ₹${Math.round(currentPrice)} with discount shown.`
+      : null,
+    checkedAt: nowTs,
+  };
+}
 
 // Clear badge when tab navigates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {

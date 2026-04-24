@@ -729,6 +729,46 @@ body {
   margin-top: 0;
 }
 
+.price-tracker {
+  margin: 16px 0 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.price-summary {
+  font-size: 12px;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.price-alert {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.price-history {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.price-history-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
 .security-gauge {
   padding: 10px;
   margin-bottom: 8px;

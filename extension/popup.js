@@ -514,6 +514,8 @@ async function loadAndRender() {
       renderManipulationTab(analysis);
       animateReportPanels();
 
+      await renderPriceTracker(tab);
+
       displayAIInsight(
         tab,
         analysis.privacy?.trackers || [],
@@ -549,6 +551,85 @@ async function loadAndRender() {
       setTimeout(loadAndRender, 2000);
       return;
     }
+  });
+}
+
+async function renderPriceTracker(tab) {
+  const priceSummary = document.getElementById('price-summary');
+  const priceAlert = document.getElementById('price-alert');
+  const priceHistory = document.getElementById('price-history');
+  if (!priceSummary || !priceAlert || !priceHistory) return;
+
+  const domain = normalizeDomain(tab.url || '');
+  const productId = getProductIdFromUrl(tab.url || '', domain);
+  if (!productId) {
+    priceSummary.textContent = 'No product price detected yet.';
+    priceAlert.style.display = 'none';
+    priceHistory.innerHTML = '';
+    return;
+  }
+
+  const history = await requestPriceHistory(domain, productId);
+  const alert = await requestPriceAlert(domain, productId);
+
+  if (!history || history.length === 0) {
+    priceSummary.textContent = 'Price history not available yet.';
+    priceAlert.style.display = 'none';
+    priceHistory.innerHTML = '';
+    return;
+  }
+
+  const latest = history[history.length - 1];
+  priceSummary.textContent = `Current: ₹${Math.round(latest.currentPrice || 0)} • Samples: ${history.length}`;
+
+  if (alert?.flagged) {
+    priceAlert.textContent = alert.message || 'Possible fake discount detected.';
+    priceAlert.style.display = 'block';
+  } else {
+    priceAlert.style.display = 'none';
+  }
+
+  const recent = history.slice(-5).reverse();
+  priceHistory.innerHTML = recent.map((item) => {
+    const date = new Date(item.ts || Date.now()).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+    return `<div class="price-history-item"><span>${date}</span><span>₹${Math.round(item.currentPrice || 0)}</span></div>`;
+  }).join('');
+}
+
+function getProductIdFromUrl(url, domain) {
+  if (!url) return null;
+  if (domain.includes('amazon')) {
+    const match = url.match(/\/dp\/([A-Z0-9]+)/);
+    return match ? match[1] : null;
+  }
+  if (domain.includes('flipkart')) {
+    const match = url.match(/pid=([A-Z0-9]+)/);
+    return match ? match[1] : null;
+  }
+  return null;
+}
+
+function requestPriceHistory(domain, productId) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({
+      action: 'getPriceHistory',
+      domain,
+      productId,
+    }, (response) => {
+      resolve(response?.history || []);
+    });
+  });
+}
+
+function requestPriceAlert(domain, productId) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({
+      action: 'getPriceAlert',
+      domain,
+      productId,
+    }, (response) => {
+      resolve(response?.alert || null);
+    });
   });
 }
 

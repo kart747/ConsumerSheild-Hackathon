@@ -2570,6 +2570,17 @@
       analyzePrivacyPolicy();
       await detectDarkPatterns();
 
+      // Send price sample (if product page)
+      const priceSample = collectPriceSample();
+      if (priceSample && chrome?.runtime?.sendMessage) {
+        chrome.runtime.sendMessage({
+          action: 'priceSample',
+          data: priceSample,
+        }, () => {
+          if (chrome.runtime?.lastError) { /* noop */ }
+        });
+      }
+
       // Send results to background worker
       if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
         try {
@@ -2615,6 +2626,57 @@
         console.warn('[ConsumerShield] Analysis error:', err);
       }
     }
+  }
+
+  function collectPriceSample() {
+    const url = window.location.href || '';
+    const domain = (window.location.hostname || '').replace(/^www\./, '').toLowerCase();
+    let productId = null;
+    let priceSelectors = [];
+    let oldPriceSelectors = [];
+
+    if (domain.includes('amazon')) {
+      const match = url.match(/\/dp\/([A-Z0-9]+)/);
+      productId = match ? match[1] : null;
+      priceSelectors = ['#priceblock_ourprice', '#priceblock_dealprice', '.a-price-whole'];
+      oldPriceSelectors = ['#priceblock_listprice', '.a-text-price .a-offprice'];
+    } else if (domain.includes('flipkart')) {
+      const match = url.match(/pid=([A-Z0-9]+)/);
+      productId = match ? match[1] : null;
+      priceSelectors = ['._30xHcL', '.NhGU7', '._16nhp8'];
+      oldPriceSelectors = ['._3I9_wc', '._2p6lqe'];
+    } else {
+      return null;
+    }
+
+    if (!productId) return null;
+
+    const currentPrice = pickPriceFromSelectors(priceSelectors);
+    if (!currentPrice) return null;
+
+    const oldPrice = pickPriceFromSelectors(oldPriceSelectors);
+    const discountMatch = document.body?.innerText?.match(/(\d{1,3})\s*%\s*off/i);
+    const displayedDiscount = discountMatch ? Number(discountMatch[1]) : null;
+
+    return {
+      productId,
+      domain,
+      url,
+      currentPrice,
+      oldPrice,
+      displayedDiscount,
+      ts: Date.now(),
+    };
+  }
+
+  function pickPriceFromSelectors(selectors) {
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (!el) continue;
+      const values = extractCurrencyValues(el.textContent || '');
+      if (values.length > 0) return values[0];
+    }
+    return null;
   }
 
   if (chrome?.runtime?.onMessage) {
