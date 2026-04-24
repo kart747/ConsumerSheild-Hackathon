@@ -69,6 +69,28 @@
   const TRACKING_HOST_HINTS = /(analytics|pixel|track|tracker|telemetry|metrics|remarketing|adservice|doubleclick|insight|beacon|tagmanager|moengage|webengage|clevertap|criteo|taboola|outbrain)/i;
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // E-COMMERCE DOMAINS FOR INFINITE SCROLL DETECTION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  const ECOMMERCE_DOMAINS = [
+    'flipkart.com',
+    'amazon.in',
+    'amazon.com',
+    'myntra.com',
+    'ajio.com',
+    'snapdeal.com',
+    'meesho.com',
+    'reliancedigital.in',
+    'croma.com',
+    'tatacliq.com'
+  ];
+
+  function isEcommerceDomain() {
+    const hostname = window.location.hostname.toLowerCase();
+    return ECOMMERCE_DOMAINS.some(domain => hostname.includes(domain));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // DARK PATTERN SIGNATURES
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -909,6 +931,10 @@
   function detectEcommercePricingManipulation() {
     detectDripPricingInCheckout();
     detectMisleadingDiscountMath();
+    detectFakeOriginalPrice();
+    detectPriceAnchoring();
+    detectSubscriptionTrap();
+    detectDynamicPricing();
   }
 
   function detectDripPricingInCheckout() {
@@ -1036,6 +1062,275 @@
     }
 
     applyOverlay(bestMismatch.element, 'manipulation', 'Misleading Discount');
+  }
+
+  function detectFakeOriginalPrice() {
+    const selectors = [
+      's', 'del', 'strike', '.strike-through', '.was-price', '.original-price',
+      '[class*="strike"]', '[class*="was-price"]', '[class*="original"]',
+      '[style*="line-through"]', '.mp-price__strike'
+    ];
+
+    const containers = findPriceRelatedContainers();
+    let bestFinding = null;
+
+    containers.forEach((item) => {
+      const text = item.text;
+      const element = item.element;
+
+      const crossedElements = Array.from(element?.querySelectorAll?.(selectors.join(', ')) || []);
+      
+      if (crossedElements.length === 0) return;
+
+      const crossedTexts = crossedElements
+        .map(el => normalizeScanText(el.textContent || ''))
+        .filter(t => t.length > 0);
+
+      if (crossedTexts.length === 0) return;
+
+      const currentPrices = extractCurrencyValues(text);
+      const originalPrices = crossedTexts.flatMap(t => extractCurrencyValues(t));
+
+      if (currentPrices.length === 0 || originalPrices.length === 0) return;
+
+      const lowestCurrent = Math.min(...currentPrices);
+      const highestOriginal = Math.max(...originalPrices);
+
+      if (lowestCurrent >= highestOriginal) return;
+
+      const displayedDiscount = Math.round(((highestOriginal - lowestCurrent) / highestOriginal) * 100);
+      
+      if (displayedDiscount < 20 || displayedDiscount > 95) return;
+
+      const confidence = Math.min(0.95, 0.72 + Math.min(0.15, displayedDiscount / 100));
+      
+      if (!bestFinding || confidence > bestFinding.confidence) {
+        bestFinding = {
+          element,
+          confidence,
+          displayedDiscount,
+          originalPrice: highestOriginal,
+          currentPrice: lowestCurrent,
+          crossedText: crossedTexts[0].slice(0, 100)
+        };
+      }
+    });
+
+    if (!bestFinding) return;
+
+    const severity = bestFinding.displayedDiscount >= 50 ? 'high' : 'medium';
+    const evidence = `Displayed "was Rs.${Math.round(bestFinding.originalPrice)}" but current price is Rs.${Math.round(bestFinding.currentPrice)} — ${bestFinding.displayedDiscount}% "discount"`;
+    const existing = state.patterns.find((p) => p.type === 'sneaking' && /fake.*original.*price/i.test(p.name || ''));
+
+    const payload = {
+      type: 'sneaking',
+      name: 'Fake Original Price',
+      severity,
+      confidence: bestFinding.confidence,
+      law: DARK_PATTERNS.sneaking.law,
+      penalty: DARK_PATTERNS.sneaking.penalty,
+      description: 'Displayed original price appears inflated to make discount look larger than it truly is.',
+      element: bestFinding.element,
+      text: evidence,
+    };
+
+    if (!existing) {
+      state.patterns.push(payload);
+    } else if ((existing.confidence || 0) < payload.confidence) {
+      Object.assign(existing, payload);
+    }
+
+    if (bestFinding.element) {
+      applyOverlay(bestFinding.element, 'manipulation', 'Fake Original Price');
+    }
+  }
+
+  function detectPriceAnchoring() {
+    const pricingTierPatterns = [
+      /(\₹|Rs\.?|INR)\s*[\d,]+(\.\d{2})?\s*[\/]?\s*(month|year|yr)/i,
+      /basic/i,
+      /standard/i,
+      /premium/i,
+      /pro\s*plan/i,
+      /basic\s*plan/i,
+      /standard\s*plan/i,
+      /premium\s*plan/i,
+      /free\s*trial/i,
+      /starts\s*(at|from)\s*(\₹|Rs\.?|INR)/i,
+    ];
+
+    const containers = Array.from(document.querySelectorAll('section, div, table')).filter(el => {
+      const text = normalizeScanText(el.textContent || '');
+      return pricingTierPatterns.some(pattern => pattern.test(text));
+    });
+
+    let bestFinding = null;
+
+    containers.forEach((container) => {
+      const text = normalizeScanText(container.textContent || '');
+      const pricingMatches = text.match(/(?:(\₹|Rs\.?|INR)\s*)?([\d,]+(?:\.\d{2})?)/gi);
+      
+      if (!pricingMatches || pricingMatches.length < 2) return;
+
+      const prices = pricingMatches
+        .map(m => extractCurrencyValues(m))
+        .flat()
+        .filter(p => p > 0);
+
+      if (prices.length < 2) return;
+
+      const sortedPrices = [...prices].sort((a, b) => a - b);
+      const lowestPrice = sortedPrices[0];
+      const highestPrice = sortedPrices[sortedPrices.length - 1];
+
+      if (highestPrice <= lowestPrice * 1.5) return;
+
+      const hasRecommended = /\b(recommended|most\s*popular|best\s*value|most\s*chosen|suggested|preferred)\b/i.test(text);
+      const hasBasic = /\b(basic|starter|free| Lite)\b/i.test(text.toLowerCase());
+      const hasPremium = /\b(premium|pro|advanced|ultimate|best)\b/i.test(text.toLowerCase());
+
+      const recommendedOnHighest = hasRecommended && (text.indexOf('premium') > -1 || text.indexOf('pro') > -1 || text.indexOf('advanced') > -1 || text.indexOf('ultimate') > -1);
+      const basicOptionHidden = hasPremium && hasBasic === false;
+
+      if (!hasRecommended && !basicOptionHidden) return;
+
+      const confidence = Math.min(0.92, 0.68 + (recommendedOnHighest ? 0.15 : 0) + (basicOptionHidden ? 0.1 : 0));
+      const severity = (recommendedOnHighest || bestFinding?.confidence > 0.8) ? 'medium' : 'low';
+
+      if (!bestFinding || confidence > bestFinding.confidence) {
+        bestFinding = {
+          element: container,
+          confidence,
+          severity,
+          lowestPrice,
+          highestPrice,
+          anchorType: recommendedOnHighest ? 'recommended_on_expensive' : 'hidden_cheap_option'
+        };
+      }
+    });
+
+    if (!bestFinding) return;
+
+    const evidence = `Price tiers: Rs.${Math.round(bestFinding.lowestPrice)} to Rs.${Math.round(bestFinding.highestPrice)} — ${bestFinding.anchorType.replace(/_/g, ' ')}`;
+    const existing = state.patterns.find((p) => p.type === 'misdirection' && /price\s*anchoring/i.test(p.name || ''));
+
+    const payload = {
+      type: 'misdirection',
+      name: 'Price Anchoring',
+      severity: bestFinding.severity,
+      confidence: bestFinding.confidence,
+      law: DARK_PATTERNS.misdirection.law,
+      penalty: DARK_PATTERNS.misdirection.penalty,
+      description: 'Pricing tiers designed to direct users toward expensive options through psychological anchoring.',
+      element: bestFinding.element,
+      text: evidence,
+    };
+
+    if (!existing) {
+      state.patterns.push(payload);
+    } else if ((existing.confidence || 0) < payload.confidence) {
+      Object.assign(existing, payload);
+    }
+
+    if (bestFinding.element) {
+      applyOverlay(bestFinding.element, 'manipulation', 'Price Anchoring');
+    }
+  }
+
+  function detectSubscriptionTrap() {
+    const trapPatterns = [
+      /first\s*(month|week|year)?\s*(only)?\s*(\₹|Rs\.?|INR)\s*[\d,]+(?:\.\d{2})?/i,
+      /(\₹|Rs\.?|INR)\s*[\d,]+(?:\.\d{2})?\s*\/?\s*(first|initial)\s*(month|year|week)/i,
+      /(\₹|Rs\.?|INR)\s*[\d,]+(?:\.\d{2})?\s*then\s*(\₹|Rs\.?|INR)\s*[\d,]+(?:\.\d{2})?/i,
+      /after\s*(trial|free)\s*(period)?\s*,?\s*(will\s*)?(charge|bill|renew)\s*at/i,
+      /subscription\s*(will\s*)?(auto[\s-]?)?renew\s*at/i,
+      /recurring\s*(charge|billing|payment)\s*of/i,
+      /charged?\s*(monthly|yearly|annually)\s*(at|after)\s*(rs\.?|₹|inr)?\s*[\d,]+/i,
+      /starts?\s*(at|from)?\s*(rs\.?|₹|inr)?\s*[\d,]+(?:\.\d{2})?\s*\/\s*(month|year)/i,
+      /(free|trial)\s*membership.*(then|after).*(\₹|Rs\.?|INR)/i,
+    ];
+
+    const bodyText = document.body?.innerText || '';
+    let bestMatch = null;
+
+    trapPatterns.forEach((pattern) => {
+      const match = bodyText.match(pattern);
+      if (!match) return;
+
+      const matchIndex = bodyText.indexOf(match[0]);
+      const contextStart = Math.max(0, matchIndex - 100);
+      const contextEnd = Math.min(bodyText.length, matchIndex + match[0].length + 100);
+      const context = bodyText.slice(contextStart, contextEnd);
+
+      const confidence = Math.min(0.9, 0.7 + (match[0].length > 30 ? 0.1 : 0));
+
+      const priceMatches = extractCurrencyValues(match[0]);
+      const hasTwoPrices = priceMatches.length >= 2;
+      const priceJump = hasTwoPrices && priceMatches[1] > priceMatches[0] * 3;
+
+      if (!bestMatch || confidence > bestMatch.confidence) {
+        bestMatch = {
+          text: match[0],
+          context,
+          confidence,
+          severity: priceJump ? 'high' : 'medium',
+          hasPriceEscalation: priceJump
+        };
+      }
+    });
+
+    if (!bestMatch) return;
+
+    const existing = state.patterns.find((p) => p.type === 'forced_continuity' && /subscription\s*trap/i.test(p.name || ''));
+
+    const payload = {
+      type: 'forced_continuity',
+      name: 'Subscription Trap',
+      severity: bestMatch.severity,
+      confidence: bestMatch.confidence,
+      law: DARK_PATTERNS.forced_continuity.law,
+      penalty: DARK_PATTERNS.forced_continuity.penalty,
+      description: bestMatch.hasPriceEscalation 
+        ? `Low introductory price that escalates significantly after trial period.`
+        : `Subscription terms with unclear renewal pricing hidden in fine print.`,
+      element: document.body,
+      text: bestMatch.text.slice(0, 120),
+    };
+
+    if (!existing) {
+      state.patterns.push(payload);
+    } else if ((existing.confidence || 0) < payload.confidence) {
+      Object.assign(existing, payload);
+    }
+  }
+
+  function detectDynamicPricing() {
+    const userAgent = navigator.userAgent || '';
+    const isLoggedIn = Boolean(document.cookie.match(/(session|token|auth|login)/i));
+    
+    if (!isLoggedIn) return;
+
+    const priceSelectors = [
+      '.price', '.product-price', '.current-price', '.selling-price',
+      '.a-price-whole', '.pdp-price', '.product__price'
+    ];
+
+    const priceElements = priceSelectors
+      .flatMap(sel => Array.from(document.querySelectorAll(sel)))
+      .filter(el => el.offsetHeight > 0 && el.offsetWidth > 0);
+
+    if (priceElements.length === 0) return;
+
+    const priceText = normalizeScanText(priceElements[0].textContent || '');
+    const prices = extractCurrencyValues(priceText);
+
+    if (prices.length === 0) return;
+
+    const currentPrice = prices[0];
+    const pageUrl = window.location.href;
+    const domain = window.location.hostname;
+
+    console.log('[ConsumerShield] Dynamic pricing check:', { domain, currentPrice, isLoggedIn });
   }
 
   function detectTrickWordingAdvanced() {
@@ -2414,6 +2709,132 @@
         runAnalysis();
       }, 1200);
     }
+  }, 2000);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // INFINITE SCROLL DETECTION (MutationObserver)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function detectUrgencyPatterns() {
+    const scarcityPatterns = [
+      /only\s*(\d+|one|two|three|few|several)\s*(left|remaining|in stock|available|spots)/i,
+      /selling\s*out|sold\s*out/i,
+      /(\d+)\s*people\s*(are\s*)?(viewing|watching|looking at|browsing|interested)/i,
+      /(\d+)\s*(hours?|mins?|minutes?|seconds?)\s*(left|remaining|till|until)/i,
+      /limited\s*(time|offer|stock|quantity)/i,
+      /last\s*(chance|opportunity|few|day)/i,
+      /hurry[!,\s]*only/i,
+      /fast\s*selling/i,
+    ];
+
+    const bodyText = document.body.innerText || '';
+    
+    for (const pattern of scarcityPatterns) {
+      const match = bodyText.match(pattern);
+      if (match) {
+        const existing = state.patterns.find(p => p.type === 'urgency' && p.name === 'Scarcity Signal');
+        if (!existing) {
+          state.patterns.push({
+            type: 'urgency',
+            name: 'Scarcity Signal',
+            severity: 'high',
+            confidence: 0.78,
+            law: DARK_PATTERNS.urgency.law,
+            penalty: DARK_PATTERNS.urgency.penalty,
+            description: `Artificial scarcity detected: "${match[0]}"`,
+            element: document.body,
+            text: match[0].slice(0, 100),
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  function setupInfiniteScrollObserver() {
+    if (!isEcommerceDomain()) return;
+    
+    let rescanTimeout = null;
+    const DEBOUNCE_MS = 400;
+
+    const itemLevelPatterns = [
+      'fake_original_price',
+      'price_anchoring',
+      'urgency'
+    ];
+
+    const rescanForInfiniteScroll = () => {
+      if (rescanTimeout) clearTimeout(rescanTimeout);
+      rescanTimeout = setTimeout(() => {
+        if (!extensionEnabled) return;
+        
+        injectOverlayStyles();
+        detectFakeOriginalPrice();
+        detectPriceAnchoring();
+        detectCountdownTimers();
+        detectUrgencyPatterns();
+        
+        if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+          try {
+            chrome.runtime.sendMessage({
+              action: 'analyzeComplete',
+              data: {
+                url: window.location.href,
+                domain: window.location.hostname,
+                timestamp: Date.now(),
+                privacy: {
+                  trackers: state.trackers,
+                  detectedDomains: state.detectedDomains,
+                  policy: state.policy,
+                  fingerprinting: state.fingerprinting,
+                },
+                manipulation: {
+                  patterns: state.patterns
+                    .filter(p => itemLevelPatterns.includes(p.type))
+                    .map(p => ({
+                      type: p.type,
+                      name: p.name,
+                      severity: p.severity,
+                      confidence: p.confidence,
+                      law: p.law,
+                      penalty: p.penalty,
+                      description: p.description,
+                      text: p.text,
+                      occurrence_count: Number(p.occurrence_count || 1),
+                      target: buildPatternTargetMeta(p.element),
+                    })),
+                },
+              }
+            }, () => {
+              if (chrome.runtime?.lastError) { /* noop */ }
+            });
+          } catch (error) {
+            if (!isExtensionContextInvalidatedError(error)) {
+              console.warn('[ConsumerShield] Infinite scroll rescan error:', error);
+            }
+          }
+        }
+      }, DEBOUNCE_MS);
+    };
+
+    const observer = new MutationObserver((mutations) => {
+      const hasNewNodes = mutations.some(mutation => mutation.addedNodes.length > 0);
+      if (hasNewNodes) {
+        rescanForInfiniteScroll();
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    console.log('[ConsumerShield] Infinite scroll observer active for:', window.location.hostname);
+  }
+
+  // Start infinite scroll observer after initial analysis
+  scheduleTrackedTimeout(() => {
+    setupInfiniteScrollObserver();
   }, 2000);
 
 })();

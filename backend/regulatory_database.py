@@ -85,6 +85,16 @@ REGULATORY_FRAMEWORK = {
             "also_violates": "Consumer Protection Act 2019, Section 2(47)",
         },
 
+        "fake_original_price": {
+            "law":         "Guidelines for Prevention and Regulation of Dark Patterns 2023",
+            "short":       "CCPA Dark Patterns Guidelines 2023",
+            "section":     "Schedule — Item 11: Drip Pricing / False Discounts",
+            "description": "Displaying inflated 'original' prices to make discounts appear larger than they are.",
+            "penalty":     {"min": "₹25 lakh", "max": "₹50 lakh"},
+            "authority":   "Central Consumer Protection Authority (CCPA)",
+            "also_violates": "Consumer Protection Act 2019, Section 2(47) — Misleading Advertising",
+        },
+
         "confirmshaming": {
             "law":         "Guidelines for Prevention and Regulation of Dark Patterns 2023",
             "short":       "CCPA Dark Patterns Guidelines 2023",
@@ -113,6 +123,16 @@ REGULATORY_FRAMEWORK = {
             "also_violates": "Consumer Protection Act 2019, Section 47 — Unfair Contract",
         },
 
+        "subscription_trap": {
+            "law":         "Guidelines for Prevention and Regulation of Dark Patterns 2023",
+            "short":       "CCPA Dark Patterns Guidelines 2023",
+            "section":     "Schedule — Item 7: Forced Continuity",
+            "description": "Low introductory prices that escalate significantly after trial period (subscription trap).",
+            "penalty":     {"min": "₹25 lakh", "max": "₹50 lakh"},
+            "authority":   "Central Consumer Protection Authority (CCPA)",
+            "also_violates": "Consumer Protection Act 2019, Section 47 — Unfair Contract",
+        },
+
         "disguised_ads": {
             "law":         "Guidelines for Prevention and Regulation of Dark Patterns 2023",
             "short":       "CCPA Dark Patterns Guidelines 2023",
@@ -128,6 +148,16 @@ REGULATORY_FRAMEWORK = {
             "short":       "CCPA Dark Patterns Guidelines 2023",
             "section":     "Schedule — Item 10: Misdirection",
             "description": "Using visual hierarchy or framing to steer users toward a seller-favored choice.",
+            "penalty":     {"min": "₹10 lakh", "max": "₹25 lakh"},
+            "authority":   "Central Consumer Protection Authority (CCPA)",
+            "also_violates": "Consumer Protection Act 2019, Section 2(47)",
+        },
+
+        "price_anchoring": {
+            "law":         "Guidelines for Prevention and Regulation of Dark Patterns 2023",
+            "short":       "CCPA Dark Patterns Guidelines 2023",
+            "section":     "Schedule — Item 10: Misdirection",
+            "description": "Presenting multiple price options with psychological anchoring to steer toward expensive tiers.",
             "penalty":     {"min": "₹10 lakh", "max": "₹25 lakh"},
             "authority":   "Central Consumer Protection Authority (CCPA)",
             "also_violates": "Consumer Protection Act 2019, Section 2(47)",
