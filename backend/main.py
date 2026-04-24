@@ -159,12 +159,27 @@ try:
     from transformers import pipeline as hf_pipeline
 
     print("[ConsumerShield] Loading local BERT model...")
-    # Using a lightweight model fine-tuned specifically for dark patterns
-    nlp_classifier = hf_pipeline("text-classification", model="aditizingre07/distilroberta-dark-pattern")
+    # Using ConsumerShield fine-tuned model for multi-class dark pattern detection
+    nlp_classifier = hf_pipeline("text-classification", model="./consumershield-roberta-final")
     LOCAL_NLP_AVAILABLE = True
     print("[ConsumerShield] Local BERT loaded successfully!")
 except Exception as e:
     print(f"[ConsumerShield] Failed to load BERT: {e}")
+
+# ── Severity order for pattern classification ─────────────────
+SEVERITY_ORDER = {"high": 3, "medium": 2, "low": 1}
+
+# ── BERT label mapping for dynamic handling ─────────────────
+# Mapping for ConsumerShield fine-tuned model (7 classes)
+BERT_LABEL_MAPPING = {
+    "Forced Action": "Forced Action",
+    "Misdirection": "Misdirection",
+    "Obstruction": "Obstruction",
+    "Scarcity": "Scarcity",
+    "Sneaking": "Sneaking",
+    "Social Proof": "Social Proof",
+    "Urgency": "Urgency",
+}
 
 # ── Tracker Radar + heuristic intelligence ───────────────────
 TRACKING_KEYWORDS = (
@@ -1205,30 +1220,40 @@ async def make_ai_insight(
         }
 
     async def get_bert_classification():
-        """Task to classify first dark pattern using local BERT"""
+        """Task to classify each dark pattern using local BERT individually"""
         if not LOCAL_NLP_AVAILABLE or not manipulation.patterns:
             return None
         try:
-            sample_segments: List[str] = []
-            for pattern in manipulation.patterns[:3]:
-                if pattern.text:
-                    sample_segments.append(pattern.text)
-                elif pattern.description:
-                    sample_segments.append(pattern.description)
-                else:
-                    sample_segments.append(pattern.name)
-
-            sample_text = " ".join(sample_segments).strip()
-            if not sample_text:
-                sample_text = manipulation.patterns[0].name
-
-            sample_text = sample_text[:400]
-            bert_result = nlp_classifier(sample_text)
-            return {
-                "label": bert_result[0].get("label", "unknown"),
-                "confidence": round(bert_result[0].get("score", 0.0) * 100, 1),
-                "text_analyzed": sample_text
-            }
+            # Sort patterns by severity (high -> medium -> low)
+            sorted_patterns = sorted(
+                manipulation.patterns,
+                key=lambda p: SEVERITY_ORDER.get(getattr(p, 'severity', 'medium'), 2),
+                reverse=True
+            )
+            
+            results = []
+            for pattern in sorted_patterns:
+                # Get text from pattern (prefer text, then description, then name)
+                text = getattr(pattern, 'text', None) or getattr(pattern, 'description', None) or getattr(pattern, 'name', '')
+                if not text:
+                    continue
+                
+                # Truncate to 512 chars (BERT max)
+                text = text[:512]
+                
+                # Classify each pattern individually
+                bert_result = nlp_classifier(text)
+                
+                results.append({
+                    "pattern_type": getattr(pattern, 'type', 'unknown'),
+                    "pattern_name": getattr(pattern, 'name', 'unknown'),
+                    "label": bert_result[0].get("label", "unknown"),
+                    "confidence": round(bert_result[0].get("score", 0.0) * 100, 1),
+                    "text_analyzed": text[:100]  # Store first 100 chars for display
+                })
+            
+            return results if results else None
+            
         except Exception as e:
             print(f"[ConsumerShield] BERT error: {e}")
             return None
@@ -1256,13 +1281,19 @@ async def make_ai_insight(
     fallback_summary = make_rule_insight(url, privacy, manipulation, p_risk, m_risk)
 
     bert_note = None
-    if bert_classification:
-        raw_label = str(bert_classification.get("label", "unknown"))
-        confidence = bert_classification.get("confidence", 0.0)
-        if raw_label.lower() in {"not_dark_pattern", "not-dark-pattern"} and len(manipulation.patterns) > 0:
-            bert_note = f"Local model confidence is inconclusive ({confidence}%)."
+    if bert_classification and isinstance(bert_classification, list):
+        # Handle array of per-pattern results with new multi-class model
+        total = len(bert_classification)
+        avg_confidence = sum(r.get("confidence", 0) for r in bert_classification) / total if total > 0 else 0
+        
+        # Get unique pattern types detected by BERT
+        detected_types = [r.get("label", "unknown") for r in bert_classification]
+        unique_types = list(set(detected_types))
+        
+        if unique_types:
+            bert_note = f"Local model: {', '.join(unique_types)} ({avg_confidence:.1f}% avg confidence)"
         else:
-            bert_note = f"Local model signal: '{raw_label}' ({confidence}%)."
+            bert_note = f"Local model: no patterns detected ({avg_confidence:.1f}% confidence)"
 
     if gemini_insight:
         combined_summary = gemini_insight

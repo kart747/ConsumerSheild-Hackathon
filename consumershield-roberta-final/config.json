@@ -1,0 +1,11 @@
+{
+  "model_name": "distilroberta-base",
+  "lora_r": 8,
+  "lora_alpha": 16,
+  "batch_size": 8,
+  "epochs": 2,
+  "max_length": 256,
+  "best_macro_f1": 0.4596878135152092,
+  "best_binary_threshold": 0.1898193359375,
+  "best_binary_f1": 0.9983471073880167
+}
