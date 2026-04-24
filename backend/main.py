@@ -1486,7 +1486,7 @@ def _find_duplicate_report(
         db.query(ReportRecord)
         .filter(
             ReportRecord.domain == normalized_domain,
-            ReportRecord.pattern_names_json == str(pattern_names_json or "[]"),
+            ReportRecord.pattern_names_json == (json.dumps(pattern_names_json) if isinstance(pattern_names_json, list) else json.dumps([])),
             ReportRecord.tracker_count == tracker_count_val,
             ReportRecord.privacy_risk.between(float(privacy_risk or 0.0) - epsilon, float(privacy_risk or 0.0) + epsilon),
             ReportRecord.manipulation_risk.between(float(manipulation_risk or 0.0) - epsilon, float(manipulation_risk or 0.0) + epsilon),
