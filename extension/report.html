@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ConsumerShield — Security Analysis Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,300;0,400;0,600;0,700;0,800;0,900;1,700&family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #080A0D;
+      --bg2:      #0D1017;
+      --card:     #0F1318;
+      --card2:    #131820;
+      --border:   rgba(245,230,66,.07);
+      --yellow:   #F5E642;
+      --cyan:     #00F0FF;
+      --red:      #FF003C;
+      --orange:   #FF6B00;
+      --green:    #39FF14;
+      --magenta:  #FF00AA;
+      --text:     #D4D8E0;
+      --muted:    #7A8898;
+      --muted2:   #2A3040;
+    }
+
+    html { font-size: 20px; scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Rajdhani', sans-serif;
+      overflow-x: hidden;
+      min-height: 100vh;
+      cursor: crosshair;
+    }
+
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--yellow); }
+
+    /* Keyframes */
+    @keyframes blink      { 0%,100%{opacity:1} 50%{opacity:0} }
+    @keyframes flicker    { 0%,100%{opacity:1} 91%{opacity:1} 92%{opacity:.5} 93%{opacity:1} 96%{opacity:.8} 97%{opacity:1} }
+    @keyframes fade-up    { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes spin       { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+    @keyframes scanline   { 0%{top:-2px} 100%{top:100vh} }
+    @keyframes glitch1    { 0%,89%,100%{clip-path:inset(0 0 100% 0);transform:translate(0)} 90%{clip-path:inset(15% 0 55% 0);transform:translate(-3px,0)} 92%{clip-path:inset(60% 0 10% 0);transform:translate(3px,0)} 94%{clip-path:inset(30% 0 40% 0);transform:translate(0)} }
+    @keyframes glitch2    { 0%,89%,100%{clip-path:inset(0 0 100% 0);transform:translate(0)} 90%{clip-path:inset(50% 0 20% 0);transform:translate(3px,0)} 92%{clip-path:inset(20% 0 60% 0);transform:translate(-2px,0)} 94%{clip-path:inset(75% 0 5% 0);transform:translate(1px,0)} }
+    @keyframes pulse-red  { 0%,100%{box-shadow:0 0 10px rgba(255,0,60,.3)} 50%{box-shadow:0 0 28px rgba(255,0,60,.8),0 0 50px rgba(255,0,60,.3)} }
+    @keyframes pulse-yel  { 0%,100%{opacity:.4} 50%{opacity:.9} }
+    @keyframes noise-drift{ 0%{transform:translate(0,0)} 25%{transform:translate(-1px,-1px)} 50%{transform:translate(1px,0)} 75%{transform:translate(0,1px)} 100%{transform:translate(-1px,0)} }
+
+    /* Background */
+    #bg-layer {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+    }
+    #bg-layer::before {
+      content: '';
+      position: absolute; inset: -10px;
+      background-image:
+        linear-gradient(rgba(245,230,66,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(245,230,66,.025) 1px, transparent 1px);
+      background-size: 64px 64px;
+      animation: noise-drift 10s linear infinite;
+    }
+    #bg-layer::after {
+      content: '';
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 55% 45% at 100% 0%, rgba(255,0,60,.07) 0%, transparent 65%),
+        radial-gradient(ellipse 45% 55% at 0% 100%, rgba(0,240,255,.05) 0%, transparent 65%);
+    }
+    .scanline-sweep {
+      position: absolute; left: 0; right: 0; height: 2px;
+      background: linear-gradient(transparent, rgba(245,230,66,.03), transparent);
+      animation: scanline 9s linear infinite;
+    }
+
+    /* Navigation */
+    nav#main-nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(8,10,13,.96);
+      border-bottom: 1px solid var(--border);
+      padding: 0 60px;
+    }
+    nav#main-nav::after {
+      content: '';
+      position: absolute; bottom: -1px; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent 0%, var(--yellow) 30%, transparent 100%);
+      opacity: .12;
+    }
+    .nav-inner {
+      max-width: 1500px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+    }
+    .nav-links { display: flex; align-items: center; }
+    .nav-links a {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-size: 0.65rem; font-weight: 700;
+      color: #7A8898; text-decoration: none;
+      letter-spacing: .15em; text-transform: uppercase;
+      padding: 0.3rem 0.8rem;
+      border-right: 1px solid var(--border);
+      transition: color .12s, background .12s;
+    }
+    .nav-links a:first-child { border-left: 1px solid var(--border); }
+    .nav-links a:hover { color: var(--yellow); background: rgba(245,230,66,.04); }
+    .live-badge {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.55rem; color: var(--red); letter-spacing: .2em;
+    }
+    .live-dot {
+      width: 0.3rem; height: 0.3rem;
+      background: var(--red); box-shadow: 0 0 8px var(--red);
+      animation: blink 1s step-end infinite;
+    }
+
+    /* Logo */
+    .logo { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; }
+    .logo-icon {
+      width: 1.8rem; height: 1.8rem; flex-shrink: 0;
+      border: 1px solid rgba(245,230,66,.35);
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(245,230,66,.05);
+      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+    }
+    .logo-text-main {
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 800;
+      font-size: 1rem; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--text); line-height: 1;
+    }
+    .logo-text-main span { color: var(--yellow); }
+    .logo-text-sub {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.55rem; letter-spacing: .18em; color: #7A8898; margin-top: 0.15rem;
+    }
+
+    /* Layout */
+    .page-wrap { position: relative; z-index: 1; }
+    .container  { max-width: 1500px; margin: 0 auto; padding: 0 3rem; }
+
+    /* Hero */
+    #overview { padding: 3.6rem 3rem 2.8rem; }
+    .hero-row {
+      display: flex; align-items: flex-start;
+      justify-content: space-between; gap: 3rem;
+      flex-wrap: wrap; margin-bottom: 2.4rem;
+      max-width: 1500px; margin-left: auto; margin-right: auto;
+    }
+    .hero-left  { flex:1; min-width:375px; flex-basis:550px; animation: fade-up .5s ease both; }
+    .hero-right { flex-shrink:0; width:22.5rem; max-width:100%; animation: fade-up .5s .15s ease both; }
+
+    .analysis-badge {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      padding: 0.2rem 0.7rem; margin-bottom: 1rem;
+      border: 1px solid rgba(57,255,20,.3);
+      background: rgba(57,255,20,.05);
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.55rem; color: var(--green); letter-spacing: .2em;
+    }
+    .hero-title-1 {
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 900;
+      font-size: clamp(2.6rem,7vw,4.4rem); line-height: .95;
+      color: var(--text); text-transform: uppercase; letter-spacing: .01em;
+    }
+    .hero-title-2 {
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 900;
+      font-size: clamp(2.6rem,7vw,4.4rem); line-height: .95;
+      color: var(--yellow); text-transform: uppercase; letter-spacing: .01em;
+      text-shadow: 0 0 40px rgba(245,230,66,.25);
+      position: relative; display: inline-block;
+      animation: flicker 7s ease-in-out infinite;
+    }
+    .hero-title-2::before,
+    .hero-title-2::after {
+      content: attr(data-text);
+      position: absolute; top:0; left:0;
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 900;
+      font-size: inherit; line-height: inherit; text-transform: uppercase;
+    }
+    .hero-title-2::before { color: var(--red);  animation: glitch1 5s ease-in-out infinite; animation-delay:2s; }
+    .hero-title-2::after  { color: var(--cyan); animation: glitch2 5s ease-in-out infinite; animation-delay:3s; }
+
+    .meta-block { display:flex; flex-direction:column; gap:0.4rem; margin:1.2rem 0 1.6rem; }
+    .meta-row   { display:flex; align-items:center; gap:0.5rem; }
+    .meta-label { font-family:'Share Tech Mono',monospace; font-size:0.6rem; color:#7A8898; letter-spacing:.1em; }
+    .meta-value { font-family:'Share Tech Mono',monospace; font-size:0.6rem; color:var(--yellow); }
+    .meta-time  { font-family:'Share Tech Mono',monospace; font-size:0.6rem; color:#8A9BB0; }
+
+    /* Buttons */
+    .btn-group { display:flex; gap:0.6rem; flex-wrap:wrap; align-items:center; }
+    .btn {
+      display:inline-flex; align-items:center; justify-content:center;
+      gap:0.4rem; padding:0.5rem 1.2rem;
+      font-family:'Barlow Condensed',sans-serif; font-size:0.7rem; font-weight:700;
+      letter-spacing:.15em; text-transform:uppercase;
+      border:none; cursor:crosshair; line-height:1;
+      white-space:nowrap; user-select:none;
+      transition:all .12s ease;
+      clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px));
+    }
+    .btn:focus-visible { outline:1px solid var(--yellow); outline-offset:2px; }
+    .btn:disabled { opacity:.4; cursor:not-allowed; }
+    .btn-primary {
+      background:var(--yellow); color:#080A0D;
+      box-shadow:0 0 20px rgba(245,230,66,.2);
+    }
+    .btn-primary:hover:not(:disabled) { background:#fff; box-shadow:0 0 36px rgba(245,230,66,.5); transform:translateY(-1px); }
+    .btn-primary:active:not(:disabled){ transform:translateY(1px); }
+    .btn-outline {
+      background:transparent; color:var(--cyan);
+      border:1px solid rgba(0,240,255,.35);
+    }
+    .btn-outline:hover:not(:disabled) {
+      background:rgba(0,240,255,.07);
+      border-color:var(--cyan);
+      box-shadow:0 0 18px rgba(0,240,255,.2);
+      transform:translateY(-1px);
+    }
+    .btn svg.spin { animation:spin 1s linear infinite; }
+
+    /* Stat grid */
+    .stat-grid {
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+      gap:1px; background:var(--border);
+      border:1px solid var(--border);
+    }
+    .stat-tile {
+      padding:1.2rem; background:var(--card);
+      position:relative; overflow:hidden;
+      transition:background .2s;
+    }
+    .stat-tile:hover { background:var(--card2); }
+    .stat-tile::before {
+      content:''; position:absolute; top:0; left:0; right:0; height:2px;
+    }
+    .stat-top   { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:0.5rem; }
+    .stat-label { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; letter-spacing:.15em; text-transform:uppercase; }
+    .stat-icon  { font-size:0.7rem; opacity:.4; }
+    .stat-val   { font-family:'Barlow Condensed',sans-serif; font-size:2.4rem; font-weight:800; line-height:1; margin-bottom:0.2rem; letter-spacing:-.02em; }
+    .stat-sub   { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#7A8898; letter-spacing:.06em; }
+
+    /* Base card */
+    .cp-card {
+      background:var(--card); border:1px solid var(--border);
+      position:relative; overflow:hidden;
+    }
+    .cp-card.cut-tr { clip-path:polygon(0 0,calc(100% - 22px) 0,100% 22px,100% 100%,0 100%); }
+    .cp-card.cut-tr::after {
+      content:''; position:absolute; top:0; right:0;
+      border-style:solid; border-width:0 22px 22px 0;
+      border-color:transparent var(--bg) transparent transparent;
+      pointer-events:none; z-index:2;
+    }
+
+    /* Gauge */
+    .gauge-card { padding:1.6rem 2.25rem; text-align:center; }
+    .gauge-label {
+      font-family:'Share Tech Mono',monospace;
+      font-size:0.55rem; letter-spacing:.25em; color:#8A9BB0;
+      text-transform:uppercase; margin-bottom:1rem;
+    }
+    .gauge-label::before { content:'/// '; color:var(--yellow); }
+    .gauge-wrap  { position:relative; width:13.75rem; height:13.75rem; margin:0 auto; overflow:visible; }
+    .gauge-glow  { position:absolute; inset:-0.7rem; border-radius:50%; animation:pulse-yel 3s ease-in-out infinite; pointer-events:none; }
+    #gauge-svg   { transform:rotate(-225deg); position:relative; z-index:1; display:block; }
+    .gauge-center {
+      position:absolute; inset:0;
+      display:flex; flex-direction:column; align-items:center; justify-content:center; padding-top:0.5rem;
+    }
+    .gauge-score-display {
+      font-family:'Barlow Condensed',sans-serif; font-weight:900;
+      display:flex; align-items:baseline; gap:0.1rem; line-height:1; margin-bottom:0.2rem;
+    }
+    .gauge-score-label { font-size:0.65rem; color:#8A9BB0; letter-spacing:.1em; margin-right:0.1rem; }
+    .gauge-score       { font-size:2.7rem; }
+    .gauge-denom       { font-size:0.8rem; color:#8A9BB0; }
+    .gauge-risk-label  {
+      margin-top:0.25rem;
+      font-family:'Share Tech Mono',monospace;
+      font-size:0.6rem; letter-spacing:.18em; text-transform:uppercase;
+      padding:0.15rem 0.5rem; border:1px solid; display:inline-block;
+    }
+    .gauge-legend { display:flex; gap:0.7rem; justify-content:center; margin-top:0.8rem; }
+    .legend-item  { display:flex; align-items:center; gap:0.25rem; }
+    .legend-dot   { width:0.25rem; height:0.25rem; flex-shrink:0; }
+    .legend-text  { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; letter-spacing:.06em; }
+
+    /* Sections */
+    .section-wrap { max-width:1500px; margin:0 auto; padding:0 3rem; }
+    .content-section { padding-bottom:3.6rem; opacity:0; transform:translateY(1.2rem); transition:opacity .6s ease,transform .6s ease; }
+    .content-section.visible { opacity:1; transform:none; }
+    .last-section { padding-bottom:4.8rem; }
+    .content-section{
+  scroll-margin-top:100px;
+}
+    .section-header { margin-bottom:1.8rem; }
+    .section-eyebrow {
+      font-family:'Share Tech Mono',monospace;
+      font-size:0.55rem; letter-spacing:.3em; text-transform:uppercase; margin-bottom:0.4rem;
+    }
+    .section-eyebrow::before { content:'/// '; color:var(--yellow); }
+    .section-title {
+      font-family:'Barlow Condensed',sans-serif; font-weight:900;
+      font-size:clamp(1.6rem,4vw,2.6rem); line-height:1;
+      color:var(--text); letter-spacing:.02em; text-transform:uppercase;
+    }
+    .section-subtitle {
+      font-size:0.75rem; color:#8A9BB0; line-height:1.7;
+      max-width:700px; margin-top:0.5rem; font-family:'Rajdhani',sans-serif;
+    }
+    .cp-divider {
+      height:1px; margin:0.6rem 0 0.7rem;
+      background:linear-gradient(90deg,var(--yellow),transparent); opacity:.18;
+    }
+
+    /* Dark patterns */
+    .dark-grid {
+      display:grid; grid-template-columns:repeat(auto-fit,minmax(28.75rem,1fr));
+      gap:2px; background:var(--border);
+    }
+    .dp-card {
+      padding:1.2rem 1.75rem; background:var(--card);
+      position:relative; overflow:hidden;
+      opacity:0; transform:translateY(1rem);
+      transition:opacity .5s ease,transform .5s ease,background .15s;
+    }
+    .dp-card:hover { background:var(--card2); }
+    .dp-card.visible { opacity:1; transform:translateY(0); }
+    .dp-card-pulse {
+      position:absolute; top:0; left:0; right:0; height:2px;
+      animation:pulse-red 2s ease-in-out infinite; pointer-events:none;
+    }
+    .dp-card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:0.8rem; margin-bottom:0.6rem; }
+    .dp-card-left{ display:flex; align-items:flex-start; gap:0.6rem; flex:1; }
+    .dp-icon {
+      width:1.8rem; height:1.8rem; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+      border:1px solid rgba(255,255,255,.07);
+    }
+    .dp-type { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:0.95rem; color:var(--text); text-transform:uppercase; letter-spacing:.04em; line-height:1.2; }
+    .dp-dpdp { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#00D4E8; letter-spacing:.1em; margin-top:0.2rem; }
+    .severity-badge {
+      flex-shrink:0; padding:0.2rem 0.6rem; border:1px solid;
+      font-family:'Share Tech Mono',monospace; font-size:0.55rem; letter-spacing:.12em; text-transform:uppercase;
+    }
+    .dp-desc { font-size:0.7rem; color:#9AAABB; line-height:1.7; font-family:'Rajdhani',sans-serif; }
+    .dp-card .dp-type { color:#E8EDF5; }
+    .dp-card .dp-dpdp { color:#00D4E8; }
+    .dp-bottom-line { position:absolute; bottom:0; left:0; right:0; height:1px; opacity:.45; }
+
+    /* Trackers */
+    .tracker-card-inner { padding:1.1rem 1.375rem 0.4rem; }
+    .tracker-head {
+      display:grid; grid-template-columns:1fr auto auto;
+      padding:0 0.875rem 0.6rem; gap:1rem;
+      border-bottom:1px solid var(--border); margin-bottom:0.2rem;
+    }
+    .tracker-head-cell { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; letter-spacing:.15em; text-transform:uppercase; }
+    .tracker-rows { display:flex; flex-direction:column; gap:0.1rem; padding-bottom:0.8rem; }
+    .tracker-row {
+      display:grid; grid-template-columns:1fr auto auto;
+      align-items:center; gap:1.25rem; padding:0.7rem 1.25rem;
+      background:rgba(255,255,255,.01);
+      border-left:2px solid transparent;
+      opacity:0; transform:translateX(-0.8rem);
+      transition:opacity .4s ease,transform .4s ease,background .12s,border-color .12s;
+    }
+    .tracker-row.visible { opacity:1; transform:translateX(0); }
+    .tracker-row:hover { background:rgba(255,255,255,.025); border-left-color:var(--yellow); }
+    .tracker-name { font-family:'Barlow Condensed',sans-serif; font-size:0.8rem; font-weight:700; color:var(--text); text-transform:uppercase; letter-spacing:.04em; margin-bottom:0.1rem; }
+    .tracker-cat-row { display:flex; align-items:center; gap:0.4rem; }
+    .tracker-cat { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#00D4E8; letter-spacing:.06em; }
+    .tracker-bar-track { width:4rem; height:1px; background:var(--muted2); flex-shrink:0; }
+    .tracker-bar-fill { height:100%; width:0; transition:width .8s cubic-bezier(.16,1,.3,1); }
+    .tracker-req { font-family:'Share Tech Mono',monospace; font-size:0.6rem; color:#8A9BB0; text-align:right; white-space:nowrap; }
+    .tracker-req span { font-size:0.55rem; opacity:.8; }
+    .risk-badge { padding:0.2rem 0.6rem; border:1px solid; font-family:'Share Tech Mono',monospace; font-size:0.55rem; letter-spacing:.12em; text-transform:uppercase; }
+    .tracker-footer { padding:0.8rem 1.375rem; border-top:1px solid var(--border); background:rgba(245,230,66,.02); }
+    .tracker-footer p { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; line-height:1.9; letter-spacing:.03em; }
+    .tracker-footer strong { color:var(--yellow); }
+
+    /* AI */
+    .ai-card { padding:1.6rem 2.25rem; }
+    .ai-header { display:flex; align-items:center; gap:0.8rem; margin-bottom:1.2rem; padding-bottom:1rem; border-bottom:1px solid var(--border); }
+    .ai-icon {
+      width:2.2rem; height:2.2rem; flex-shrink:0;
+      background:rgba(255,0,170,.07); border:1px solid rgba(255,0,170,.25);
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 0 16px rgba(255,0,170,.12);
+    }
+    .ai-title { font-family:'Barlow Condensed',sans-serif; font-size:0.95rem; font-weight:700; color:var(--text); text-transform:uppercase; letter-spacing:.08em; }
+    .ai-sub   { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:var(--magenta); letter-spacing:.12em; margin-top:0.2rem; }
+    .ai-text  { font-size:0.75rem; color:#9AAABB; line-height:1.85; border-left:2px solid rgba(255,0,170,.35); padding-left:1rem; margin-bottom:1.2rem; font-family:'Rajdhani',sans-serif; }
+    .ai-findings { display:grid; grid-template-columns:repeat(auto-fit,minmax(13.75rem,1fr)); gap:2px; background:var(--border); }
+    .ai-finding {
+      padding:0.7rem 1.125rem; background:var(--card2);
+      display:flex; align-items:center; justify-content:space-between; gap:0.6rem;
+      border-left:2px solid transparent; transition:border-color .15s;
+    }
+    .ai-finding:hover { border-left-color:var(--magenta); }
+    .ai-finding-label { font-family:'Rajdhani',sans-serif; font-size:0.7rem; color:#9AAABB; line-height:1.4; }
+    .ai-finding-score { font-family:'Share Tech Mono',monospace; font-size:0.55rem; letter-spacing:.12em; flex-shrink:0; text-transform:uppercase; color:#C8D0DC; }
+
+    /* Legal */
+    .act-badge {
+      display:inline-flex; align-items:center; gap:0.5rem;
+      margin-bottom:1.2rem; padding:0.5rem 0.8rem;
+      border:1px solid rgba(0,240,255,.18); background:rgba(0,240,255,.03);
+    }
+    .act-badge span { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#00D4E8; letter-spacing:.08em; }
+    .legal-list { display:flex; flex-direction:column; gap:0.1rem; background:var(--border); }
+    .legal-card {
+      padding:1rem 1.5rem; background:var(--card);
+      position:relative; overflow:hidden;
+      opacity:0; transform:translateY(0.8rem);
+      transition:opacity .5s ease,transform .5s ease,background .12s;
+      border-left:3px solid transparent;
+    }
+    .legal-card:hover { background:var(--card2); }
+    .legal-card.visible { opacity:1; transform:translateY(0); }
+    .legal-inner { display:flex; align-items:flex-start; gap:0.7rem; }
+    .legal-icon  { width:1.7rem; height:1.7rem; flex-shrink:0; display:flex; align-items:center; justify-content:center; border:1px solid rgba(255,255,255,.07); }
+    .legal-meta  { flex:1; }
+    .legal-tags  { display:flex; align-items:center; flex-wrap:wrap; gap:0.4rem; margin-bottom:0.3rem; }
+    .legal-section-label { font-family:'Share Tech Mono',monospace; font-size:0.55rem; letter-spacing:.15em; text-transform:uppercase; }
+    .legal-tag   { font-family:'Share Tech Mono',monospace; font-size:0.55rem; padding:0.1rem 0.5rem; letter-spacing:.12em; text-transform:uppercase; border:1px solid; }
+    .legal-title { font-family:'Barlow Condensed',sans-serif; font-size:0.9rem; font-weight:700; color:#EDF0F5; text-transform:uppercase; letter-spacing:.04em; margin-bottom:0.3rem; }
+    .legal-desc  { font-size:0.7rem; color:#8A9BB0; line-height:1.7; font-family:'Rajdhani',sans-serif; }
+    .legal-card:hover .legal-desc { color:#AAB8C8; }
+    .disclaimer  { margin-top:1.2rem; padding:0.8rem 1rem; background:rgba(255,255,255,.01); border:1px solid var(--border); border-left:2px solid rgba(245,230,66,.25); }
+    .disclaimer p{ font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; line-height:1.9; letter-spacing:.03em; }
+
+    /* Wall of Shame */
+    .shame-header { display:flex; align-items:center; gap:0.8rem; margin-bottom:1.4rem; }
+    .shame-icon {
+      width:2.2rem; height:2.2rem; flex-shrink:0;
+      background:rgba(255,0,60,.07); border:1px solid rgba(255,0,60,.25);
+      display:flex; align-items:center; justify-content:center;
+      animation:pulse-red 2.2s ease-in-out infinite;
+    }
+    .shame-title { font-family:'Barlow Condensed',sans-serif; font-size:0.8rem; font-weight:700; color:var(--text); text-transform:uppercase; letter-spacing:.1em; }
+    .shame-sub   { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:var(--red); letter-spacing:.15em; margin-top:0.2rem; }
+    .top-five-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(16.25rem,1fr)); gap:2px; background:var(--border); margin-bottom:1.4rem; }
+    .top-five-card {
+      padding:0.9rem 1.25rem; background:var(--card);
+      position:relative; overflow:hidden;
+      opacity:0; transform:translateY(1rem);
+      transition:opacity .5s ease,transform .5s ease,background .15s;
+      border-left:2px solid rgba(255,0,60,.15);
+    }
+    .top-five-card.visible { opacity:1; transform:translateY(0); }
+    .top-five-card:hover   { background:var(--card2); border-left-color:var(--red); }
+    .top-five-rank {
+      position:absolute; top:0.6rem; right:0.6rem;
+      width:1.4rem; height:1.4rem; background:var(--red);
+      display:flex; align-items:center; justify-content:center;
+      font-family:'Barlow Condensed',sans-serif; font-size:0.7rem; font-weight:900; color:#fff;
+    }
+    .top-five-content { padding-right:2.25rem; }
+    .top-five-url {
+      font-family:'Share Tech Mono',monospace; font-size:0.65rem;
+      color:var(--text); text-decoration:none; display:block; margin-bottom:0.3rem;
+    }
+    .top-five-url:hover { color:var(--yellow); }
+    .top-five-meta { display:flex; align-items:center; gap:0.7rem; margin-bottom:0.4rem; }
+    .top-five-score { font-family:'Barlow Condensed',sans-serif; font-size:1.4rem; font-weight:900; color:var(--red); text-shadow:0 0 14px rgba(255,0,60,.4); }
+    .top-five-reports { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; display:flex; align-items:center; gap:0.2rem; }
+    .top-five-patterns { display:flex; flex-wrap:wrap; gap:0.2rem; }
+    .pattern-tag { font-family:'Share Tech Mono',monospace; padding:0.1rem 0.4rem; font-size:0.55rem; background:rgba(255,0,60,.1); border:1px solid rgba(255,0,60,.2); color:#FF4466; }
+    .full-shame-list { display:flex; flex-direction:column; gap:0.05rem; background:var(--border); }
+    .shame-row {
+      display:grid; grid-template-columns:2fr 0.9fr 2fr 1.2fr 1.8fr;
+      align-items:center; gap:1.25rem; padding:0.6rem 1.125rem;
+      background:var(--card); border-left:2px solid transparent;
+      opacity:0; transform:translateX(-1rem);
+      transition:opacity .4s ease,transform .4s ease,background .12s,border-color .12s;
+    }
+    .shame-row.visible { opacity:1; transform:translateX(0); }
+    .shame-row:hover { background:rgba(255,0,60,.03); border-left-color:var(--red); }
+    .shame-url { font-family:'Share Tech Mono',monospace; font-size:0.6rem; color:#C8D0DC; text-decoration:none; }
+    .shame-url:hover { color:var(--yellow); }
+    .shame-score { font-family:'Barlow Condensed',sans-serif; font-size:0.9rem; font-weight:800; color:var(--red); text-align:center; }
+    .shame-reports { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; text-align:center; display:flex; align-items:center; justify-content:center; gap:0.2rem; }
+    .shame-patterns { display:flex; flex-wrap:wrap; gap:0.15rem; }
+    .shame-pattern-tag { font-family:'Share Tech Mono',monospace; padding:0.1rem 0.35rem; font-size:0.55rem; background:rgba(255,0,60,.09); border:1px solid rgba(255,0,60,.2); color:#FF4466; }
+    .shame-date { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; text-align:right; }
+    .shame-tx { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; text-align:left; overflow-wrap:anywhere; }
+    .shame-tx a { color:var(--yellow); text-decoration:none; }
+    .shame-tx a:hover { text-decoration:underline; }
+    .shame-disclaimer { margin-top:1rem; padding:0.7rem 1.125rem; background:rgba(255,0,60,.03); border:1px solid rgba(255,0,60,.1); border-left:2px solid rgba(255,0,60,.35); }
+    .shame-disclaimer p { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#8A9BB0; line-height:1.9; letter-spacing:.03em; }
+
+    /* Footer */
+    footer {
+      position:relative; z-index:1;
+      border-top:1px solid var(--border);
+      background:rgba(8,10,13,.99); padding:1.6rem 3rem;
+    }
+    footer::before {
+      content:''; position:absolute; top:-1px; left:0; right:0; height:1px;
+      background:linear-gradient(90deg,transparent 0%,var(--yellow) 35%,transparent 100%); opacity:.12;
+    }
+    .footer-inner { max-width:1500px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.8rem; }
+    .footer-copy { font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#7A8898; letter-spacing:.06em; }
+
+    /* Responsive */
+    @media(max-width:768px) {
+      nav#main-nav,.section-wrap { padding:0 1rem; }
+      .nav-links { display:none; }
+      #overview  { padding:2.4rem 1rem 1.8rem; }
+      .hero-row  { flex-direction:column; }
+      .hero-right{ align-self:center; width:100%; max-width:18rem; }
+      .btn-group { flex-direction:column; width:100%; }
+      .btn-group .btn { width:100%; justify-content:center; }
+      .dark-grid  { grid-template-columns:1fr !important; }
+      .top-five-grid{ grid-template-columns:1fr !important; }
+      .shame-row  { grid-template-columns:1fr !important; gap:0.3rem !important; }
+    }
+    @media(max-width:480px) {
+      .tracker-head { display:none; }
+      .tracker-row  { grid-template-columns:1fr auto; }
+      .tracker-row .risk-badge { display:none; }
+      .footer-inner { flex-direction:column; align-items:flex-start; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="bg-layer" aria-hidden="true">
+  <div class="scanline-sweep"></div>
+</div>
+
+<div class="page-wrap">
+
+  <nav id="main-nav" role="navigation" aria-label="Main navigation">
+    <div class="nav-inner">
+      <a href="#overview" class="logo" aria-label="ConsumerShield home">
+        <div class="logo-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" fill="rgba(245,230,66,.12)" stroke="#F5E642" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M9 12l2 2 4-4" stroke="#F5E642" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="logo-text-main">Consumer<span>Shield</span></div>
+          <div class="logo-text-sub">// Digital Protection Layer</div>
+        </div>
+      </a>
+      <div class="nav-links">
+        <a href="#overview">Overview</a>
+        <a href="#dark-patterns">Dark Patterns</a>
+        <a href="#trackers">Trackers</a>
+        <a href="#ai-analysis">AI Analysis</a>
+        <a href="#legal">Legal</a>
+        <a href="#wall-of-shame">Wall of Shame</a>
+      </div>
+      <div class="live-badge" role="status" aria-live="polite">
+        <div class="live-dot" aria-hidden="true"></div>
+        Live Scan
+      </div>
+    </div>
+  </nav>
+
+  <section id="overview" aria-label="Report overview">
+    <div class="hero-row">
+      <div class="hero-left">
+        <div class="analysis-badge">
+          <svg width="7" height="7" viewBox="0 0 8 8" fill="#39FF14" aria-hidden="true"><circle cx="4" cy="4" r="4"/></svg>
+          Analysis Complete — No Errors
+        </div>
+        <h1 class="hero-title-1">Security Analysis</h1>
+        <h1 class="hero-title-2" data-text="Report">Report</h1>
+        <div class="meta-block">
+          <div class="meta-row">
+            <span class="meta-label">TARGET_URL :</span>
+            <span class="meta-value" id="meta-site">flipkart.com</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">TIMESTAMP  :</span>
+            <time class="meta-time" id="meta-time">2026-03-13 · 20:14:33 IST</time>
+          </div>
+        </div>
+        <div class="btn-group">
+          <button type="button" class="btn btn-primary" id="btn-export" aria-label="Export report">
+            <svg id="export-icon-dl" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <svg id="export-icon-spin" class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true" style="display:none"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+            <svg id="export-icon-ok" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true" style="display:none"><polyline points="20 6 9 17 4 12"/></svg>
+            <span id="export-label">Export Report</span>
+          </button>
+          <button type="button" class="btn btn-outline" id="btn-rescan" aria-label="Rescan">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+            Rescan
+          </button>
+        </div>
+      </div>
+
+      <div class="hero-right">
+        <div class="cp-card gauge-card cut-tr">
+          <div class="gauge-label">Security Score</div>
+          <div class="gauge-wrap">
+            <div class="gauge-glow" id="gauge-glow" aria-hidden="true"></div>
+            <svg id="gauge-svg" width="100%" height="100%" viewBox="0 0 300 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Security score gauge" style="max-width: 13.75rem; max-height: 13.75rem;">
+              <circle id="gauge-track" cx="150" cy="150" r="110" fill="none" stroke="rgba(255,255,255,.04)" stroke-width="15"/>
+              <g id="gauge-ticks"></g>
+              <circle id="gauge-arc" cx="150" cy="150" r="110" fill="none" stroke-width="15" stroke-linecap="square"/>
+            </svg>
+            <div class="gauge-center">
+              <div class="gauge-score-display">
+                <span class="gauge-score-label">SCORE</span>
+                <span class="gauge-score" id="gauge-score-num">0</span>
+                <span class="gauge-denom">/ 10</span>
+              </div>
+              <div class="gauge-risk-label" id="gauge-risk-label"></div>
+            </div>
+          </div>
+          <div class="gauge-legend" role="list">
+            <div class="legend-item" role="listitem"><div class="legend-dot" style="background:#39FF14"></div><span class="legend-text">Secure</span></div>
+            <div class="legend-item" role="listitem"><div class="legend-dot" style="background:#F5E642"></div><span class="legend-text">Moderate</span></div>
+            <div class="legend-item" role="listitem"><div class="legend-dot" style="background:#FF6B00"></div><span class="legend-text">High Risk</span></div>
+            <div class="legend-item" role="listitem"><div class="legend-dot" style="background:#FF003C"></div><span class="legend-text">Critical</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stat-grid" style="max-width:1500px;margin:0 auto;" id="stat-grid"></div>
+  </section>
+
+  <div class="section-wrap">
+
+    <section id="dark-patterns" class="content-section" aria-label="Detected dark patterns">
+      <header class="section-header">
+        <div class="section-eyebrow" style="color:var(--red)">Detected Threats</div>
+        <h2 class="section-title">Dark Patterns <span style="color:var(--red)">Identified</span></h2>
+        <div class="cp-divider" style="background:linear-gradient(90deg,var(--red),transparent)"></div>
+        <p class="section-subtitle">Manipulative design elements engineered to override informed decision-making and exploit cognitive vulnerabilities.</p>
+      </header>
+      <div class="dark-grid" id="dark-pattern-grid"></div>
+    </section>
+
+    <section id="trackers" class="content-section" aria-label="Privacy trackers">
+      <header class="section-header">
+        <div class="section-eyebrow" style="color:var(--cyan)">Surveillance Layer</div>
+        <h2 class="section-title">Privacy <span style="color:var(--cyan)">Trackers</span></h2>
+        <div class="cp-divider" style="background:linear-gradient(90deg,var(--cyan),transparent)"></div>
+        <p class="section-subtitle">Third-party scripts and tracking pixels detected during page load. All flagged under DPDP Act data minimisation obligations.</p>
+      </header>
+      <div class="cp-card" style="border-color:rgba(0,240,255,.1)">
+        <div class="tracker-card-inner">
+          <div class="tracker-head">
+            <div class="tracker-head-cell">Tracker / Category</div>
+            <div class="tracker-head-cell">Requests</div>
+            <div class="tracker-head-cell">Risk</div>
+          </div>
+          <div class="tracker-rows" id="tracker-rows"></div>
+        </div>
+        <div class="tracker-footer">
+          <p><strong>DPDP Act Reference:</strong> Under Section 7(b), data fiduciaries must collect only the minimum personal data necessary for stated purposes. The trackers above may constitute excess collection.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="ai-analysis" class="content-section" aria-label="AI threat analysis">
+      <header class="section-header">
+        <div class="section-eyebrow" style="color:var(--magenta)">Neural Analysis</div>
+        <h2 class="section-title">AI Threat <span style="color:var(--magenta)">Analysis</span></h2>
+        <div class="cp-divider" style="background:linear-gradient(90deg,var(--magenta),transparent)"></div>
+      </header>
+      <div class="cp-card ai-card cut-tr" style="border-color:rgba(255,0,170,.1)">
+        <div class="ai-header">
+          <div class="ai-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 2a10 10 0 100 20A10 10 0 0012 2z" stroke="#FF00AA" stroke-width="1.5"/>
+              <path d="M12 8v4M12 16h.01" stroke="#FF00AA" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div>
+            <div class="ai-title">Behavioural Pattern Analysis</div>
+            <div class="ai-sub">/// CONSUMERSHIELD_AI · CONFIDENCE: 94% · MODEL: CS-7B-ANALYST</div>
+          </div>
+        </div>
+        <p class="ai-text" id="ai-text"></p>
+        <div class="ai-findings" id="ai-findings"></div>
+      </div>
+    </section>
+
+    <section id="legal" class="content-section last-section" aria-label="Legal compliance mapping">
+      <header class="section-header">
+        <div class="section-eyebrow" style="color:var(--cyan)">Regulatory Intel</div>
+        <h2 class="section-title">Compliance <span style="color:var(--cyan)">Map</span></h2>
+        <div class="cp-divider" style="background:linear-gradient(90deg,var(--cyan),transparent)"></div>
+        <p class="section-subtitle">Findings mapped to the Digital Personal Data Protection Act 2023. Sections at risk of non-compliance are flagged for legal review.</p>
+      </header>
+      <div class="act-badge">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="#00F0FF" stroke-width="1.5"/>
+          <polyline points="14 2 14 8 20 8" stroke="#00F0FF" stroke-width="1.5"/>
+        </svg>
+        <span>/// Digital Personal Data Protection Act, 2023 · Ministry of Electronics and IT, Government of India</span>
+      </div>
+      <div class="legal-list" id="legal-list"></div>
+      <div class="disclaimer">
+        <p><strong style="color:var(--yellow)">[DISCLAIMER]</strong> This mapping is generated by ConsumerShield's AI engine for informational purposes only. It does not constitute legal advice. Findings should be reviewed by a qualified legal professional before any regulatory action is taken.</p>
+      </div>
+    </section>
+
+    <section id="wall-of-shame" class="content-section last-section" aria-label="Wall of Shame">
+      <header class="section-header">
+        <div class="section-eyebrow" style="color:var(--red)">Community Intel</div>
+        <h2 class="section-title">Wall of Shame <span style="color:var(--red)">— Most Reported</span></h2>
+        <div class="cp-divider" style="background:linear-gradient(90deg,var(--red),transparent)"></div>
+        <p class="section-subtitle">Websites frequently reported for deploying manipulative dark patterns. Community-driven transparency for digital rights protection.</p>
+      </header>
+      <div class="shame-header">
+        <div class="shame-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" stroke="#FF003C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="shame-title">Community-Powered Transparency</div>
+          <div class="shame-sub">/// CONSUMERSHIELD USER REPORTS · LIVE DATA</div>
+        </div>
+      </div>
+      <div class="top-five-grid" id="top-five-grid"></div>
+      <div class="cp-card" style="border-color:rgba(255,0,60,.1)">
+        <div class="tracker-card-inner">
+          <div class="tracker-head" style="grid-template-columns:2fr 0.9fr 2fr 1.2fr 1.8fr; padding-left:1.125rem; padding-right:1.125rem">
+            <div class="tracker-head-cell">Website</div>
+            <div class="tracker-head-cell">Risk Score</div>
+            <div class="tracker-head-cell">Dark Patterns</div>
+            <div class="tracker-head-cell">Timestamp</div>
+            <div class="tracker-head-cell">Tx / Contract</div>
+          </div>
+          <div class="full-shame-list" id="full-shame-list"></div>
+        </div>
+        <div class="tracker-footer" style="background:rgba(255,0,60,.02)">
+          <p><strong>DPDP Act Reference:</strong> Community reports help identify systemic violations of consumer protection laws. Websites with high dark pattern deployment may face regulatory scrutiny under Section 43A of the Information Technology Act, 2000.</p>
+        </div>
+      </div>
+      <div class="shame-disclaimer">
+        <p><strong style="color:var(--text)">[COMMUNITY_REPORT]</strong> This data is aggregated from ConsumerShield extension users who voluntarily report manipulative design patterns. Reports are anonymized and aggregated to protect user privacy while promoting digital transparency.</p>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<footer>
+  <div class="footer-inner">
+    <a href="#overview" class="logo" aria-label="ConsumerShield home">
+      <div class="logo-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" fill="rgba(245,230,66,.1)" stroke="#F5E642" stroke-width="1.5" stroke-linejoin="round"/>
+          <path d="M9 12l2 2 4-4" stroke="#F5E642" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-text-main">Consumer<span>Shield</span></div>
+        <div class="logo-text-sub">// Digital Protection</div>
+      </div>
+    </a>
+    <p class="footer-copy">/// Powered by ConsumerShield AI Engine · DPDP Act 2023 Compliance Module</p>
+    <p class="footer-copy">© 2026 ConsumerShield · All data processed locally · v3.7.2</p>
+  </div>
+</footer>
+
+<script src="report.js"></script>
+</body>
+</html>

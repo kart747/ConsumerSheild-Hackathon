@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ConsumerShield</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- ╔══ HEADER ══════════════════════════════════════════════╗ -->
+  <div class="header">
+    <div class="header-logo">🛡️</div>
+    <div class="header-text">
+      <h1>ConsumerShield</h1>
+      <p>Complete Consumer Protection</p>
+    </div>
+    <div class="header-scanning" id="scanning-indicator">
+      <div class="dot-pulse"></div>
+      <span>Scanning…</span>
+    </div>
+    <label class="protection-toggle" for="toggle-protection" title="ConsumerShield protection toggle">
+      <span id="protection-power-icon" aria-hidden="true">⏻</span>
+      <input type="checkbox" id="toggle-protection" checked>
+    </label>
+  </div>
+
+  <!-- ╔══ TAB BAR ═════════════════════════════════════════════╗ -->
+  <div class="tabbar">
+    <button class="tab active" data-tab="overview" id="tab-overview">
+      Overview
+    </button>
+    <button class="tab" data-tab="privacy" id="tab-privacy">
+      🔒 Privacy
+      <span class="tab-badge" id="badge-privacy">–</span>
+    </button>
+    <button class="tab" data-tab="manipulation" id="tab-manipulation">
+      ⚠️ Dark Patterns
+      <span class="tab-badge danger" id="badge-manipulation">–</span>
+    </button>
+  </div>
+
+  <!-- ╔══ OVERVIEW TAB ════════════════════════════════════════╗ -->
+  <div class="tab-content active" id="tab-content-overview">
+
+    <div class="dashboard-hero report-card" id="dashboard-hero">
+      <div class="hero-substat">
+        <span class="hero-substat-value" id="hero-domain-count">0</span>
+        <span class="hero-substat-label">Domains</span>
+      </div>
+
+      <div class="hero-gauge-wrap">
+        <svg class="hero-gauge" viewBox="0 0 180 180" role="img" aria-label="Overall security risk gauge">
+          <circle class="hero-gauge-track" cx="90" cy="90" r="64"></circle>
+          <circle class="hero-gauge-progress" id="hero-gauge-progress" cx="90" cy="90" r="64"></circle>
+        </svg>
+        <div class="hero-gauge-core">
+          <div class="hero-risk-score" id="hero-risk-score">0.0</div>
+          <div class="hero-risk-level" id="hero-risk-level">SAFE</div>
+        </div>
+      </div>
+
+      <div class="hero-substat">
+        <span class="hero-substat-value" id="hero-pattern-count">0</span>
+        <span class="hero-substat-label">Dark Patterns</span>
+      </div>
+    </div>
+
+    <p class="overall-insight" id="overall-insight">Analyzing this page…</p>
+
+    <div class="dashboard-stack">
+      <section class="dashboard-card privacy-card report-card" id="dashboard-privacy-card">
+        <div class="dashboard-card-head">
+          <h3>Privacy Card</h3>
+          <span class="score-chip" id="privacy-card-score">0.0/10</span>
+        </div>
+        <div class="privacy-progress-track">
+          <div class="privacy-progress-fill" id="privacy-card-fill" style="width:0%"></div>
+        </div>
+        <div class="dashboard-subtitle">Top Identified Entities</div>
+        <div class="dashboard-list" id="identified-entities-list">
+          <div class="empty-state">Scanning identified entities…</div>
+        </div>
+      </section>
+
+      <section class="dashboard-card suspicious-card report-card" id="dashboard-suspicious-card">
+        <div class="dashboard-card-head">
+          <h3>Suspicious Activity</h3>
+          <span class="score-chip score-chip-danger" id="suspicious-count-chip">0 flagged</span>
+        </div>
+        <div class="dashboard-list" id="suspicious-activity-list">
+          <div class="empty-state">No suspicious domains flagged yet.</div>
+        </div>
+      </section>
+
+      <section class="dashboard-card manipulation-tier-card report-card" id="dashboard-manipulation-card">
+        <div class="dashboard-card-head">
+          <h3>Manipulation Card</h3>
+          <span class="score-chip score-chip-warn" id="manipulation-card-score">0.0/10</span>
+        </div>
+        <div class="dashboard-list" id="manipulation-severity-list">
+          <div class="empty-state">Scanning dark patterns…</div>
+        </div>
+      </section>
+
+      <details class="dashboard-card network-log report-card" id="network-log-accordion">
+        <summary>
+          <span>Network Traffic Log</span>
+          <span class="accordion-count" id="network-log-count">0 requests</span>
+        </summary>
+        <div class="network-log-list" id="network-log-list">
+          <div class="empty-state">No additional background requests.</div>
+        </div>
+      </details>
+    </div>
+
+    <!-- Laws cited -->
+    <div class="laws-section" id="laws-section" style="display:none">
+      <div class="laws-title">⚖️ Laws Implicated</div>
+      <div class="laws-list" id="laws-list"></div>
+    </div>
+
+  </div>
+
+  <!-- ╔══ PRIVACY TAB ═════════════════════════════════════════╗ -->
+  <div class="tab-content" id="tab-content-privacy">
+    <div class="section-header">🔍 Trackers Detected</div>
+    <div id="tracker-list" class="item-list">
+      <div class="empty-state">Scanning…</div>
+    </div>
+
+    <div class="section-header">📄 Privacy Policy Flags</div>
+    <div id="policy-list" class="item-list">
+      <div class="empty-state">Scanning…</div>
+    </div>
+
+    <div class="section-header">⚖️ Legal Exposure</div>
+    <div id="privacy-legal-list" class="item-list legal-list">
+      <div class="empty-state">None detected</div>
+    </div>
+  </div>
+
+  <!-- ╔══ MANIPULATION TAB ═══════════════════════════════════╗ -->
+  <div class="tab-content" id="tab-content-manipulation">
+    <div class="section-header">⚠️ Dark Patterns Found</div>
+    <div id="pattern-list" class="item-list">
+      <div class="empty-state">Scanning…</div>
+    </div>
+
+    <div class="section-header">⚖️ Legal Exposure</div>
+    <div id="manipulation-legal-list" class="item-list legal-list">
+      <div class="empty-state">None detected</div>
+    </div>
+  </div>
+
+  <!-- ╔══ ACTION BAR ══════════════════════════════════════════╗ -->
+  <div class="action-bar">
+    <button class="btn-secondary" id="btn-rescan">🔄 Rescan</button>
+    <button class="btn-primary" id="btn-report">📝 Generate Report</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
