@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-train.py - Fine-tuning DistilRoBERTa for Dark Pattern Detection
+train.py - Fine-tuning RoBERTa for Dark Pattern Detection
 Dataset: aruneshmathur/dark-patterns (Princeton CSCW 2019)
-Hardware: RTX 4050 6GB VRAM
+Hardware: RTX 4050/5060 class GPUs
 """
 
 import pandas as pd
@@ -34,19 +34,23 @@ print("=" * 60)
 # ============================================
 # CONFIGURATION
 # ============================================
-MODEL_NAME = "distilroberta-base"
+MODEL_NAME = "roberta-base"
 DATASET_URL = "https://raw.githubusercontent.com/aruneshmathur/dark-patterns/master/data/final-dark-patterns/dark-patterns.csv"
-OUTPUT_DIR = "./consumershield-roberta-final"
+OUTPUT_DIR = "./consumershield-roberta-base-final"
 
 BATCH_SIZE = 8
-EPOCHS = 2  # Reduced for faster training
-LEARNING_RATE = 2e-5
-MAX_LENGTH = 256
+EPOCHS = 5
+LEARNING_RATE = 2e-4 
+MAX_LENGTH = 128
 FP16 = True
 SEED = 42
+WEIGHT_DECAY = 0.01
+WARMUP_RATIO = 0.1
+EARLY_STOPPING_PATIENCE = 3
 
 LORA_R = 8
 LORA_ALPHA = 16
+LORA_DROPOUT = 0.1
 LORA_TARGET_MODULES = ["query", "value"]
 
 np.random.seed(SEED)
@@ -181,6 +185,7 @@ model = model.to(device)
 lora_config = LoraConfig(
     r=LORA_R,
     lora_alpha=LORA_ALPHA,
+    lora_dropout=LORA_DROPOUT,
     target_modules=LORA_TARGET_MODULES,
     task_type=TaskType.SEQ_CLS,
     bias="none",
@@ -196,11 +201,12 @@ print("\n" + "=" * 60)
 print("STEP 6: Training...")
 print("=" * 60)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 total_steps = len(train_loader) * EPOCHS
+num_warmup_steps = int(total_steps * WARMUP_RATIO)
 scheduler = get_linear_schedule_with_warmup(
     optimizer,
-    num_warmup_steps=0,
+    num_warmup_steps=num_warmup_steps,
     num_training_steps=total_steps
 )
 
@@ -210,6 +216,7 @@ scaler = torch.cuda.amp.GradScaler() if FP16 and device.type == 'cuda' else None
 
 best_f1 = 0
 best_model_state = None
+patience_counter = 0
 
 for epoch in range(EPOCHS):
     model.train()
@@ -236,11 +243,11 @@ for epoch in range(EPOCHS):
             optimizer.step()
         
         total_loss += loss.item()
+        scheduler.step()
         
         if (batch_idx + 1) % 50 == 0:
             print(f"  Epoch {epoch+1}/{EPOCHS}, Batch {batch_idx+1}/{len(train_loader)}, Loss: {loss.item():.4f}")
     
-    scheduler.step()
     avg_loss = total_loss / len(train_loader)
     print(f"Epoch {epoch+1}/{EPOCHS} - Loss: {avg_loss:.4f}")
     
@@ -294,6 +301,12 @@ for epoch in range(EPOCHS):
         best_f1 = macro_f1
         best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         print(f"✓ New best model saved! F1: {best_f1:.4f}")
+        patience_counter = 0
+    else:
+        patience_counter += 1
+        if patience_counter >= EARLY_STOPPING_PATIENCE:
+            print(f"Early stopping triggered. No improvement for {EARLY_STOPPING_PATIENCE} epochs.")
+            break
 
 # ============================================
 # STEP 8: FINAL EVALUATION
@@ -340,27 +353,17 @@ print(classification_report(
 ))
 
 # ============================================
-# STEP 9: BEST THRESHOLD (for binary mode)
+# NOTE: Binary Detection Strategy
 # ============================================
-print("\n" + "=" * 60)
-print("STEP 9: Finding best threshold (binary mode)...")
-print("=" * 60)
-
-# For multi-class -> binary conversion
-binary_labels = [1 if l > 0 else 0 for l in all_labels]
-binary_probs = [max(p[1:]) if len(p) > 1 else p[0] for p in all_probs]
-
-precision, recall, thresholds = precision_recall_curve(binary_labels, binary_probs)
-f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
-best_idx = np.argmax(f1_scores)
-best_threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
-best_f1_binary = f1_scores[best_idx]
-
-print(f"Best binary threshold: {best_threshold:.4f}")
-print(f"Best binary F1: {best_f1_binary:.4f}")
+# This model classifies dark patterns into 7 types.
+# It has NO negative class (no "not_a_dark_pattern").
+# For inference, use confidence thresholds instead:
+# - If max(probabilities) < 0.70 → treat as uncertain/no pattern
+# - If max(probabilities) >= 0.70 → use predicted class
+# This handles binary detection at inference time.
 
 # ============================================
-# STEP 10: SAVE MODEL
+# STEP 9: SAVE MODEL
 # ============================================
 print("\n" + "=" * 60)
 print("STEP 10: Saving model...")
@@ -384,9 +387,7 @@ config_info = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
     "max_length": MAX_LENGTH,
-    "best_macro_f1": best_f1,
-    "best_binary_threshold": float(best_threshold),
-    "best_binary_f1": float(best_f1_binary)
+    "best_macro_f1": best_f1
 }
 with open(f"{OUTPUT_DIR}/config.json", 'w') as f:
     json.dump(config_info, f, indent=2)
@@ -396,5 +397,3 @@ print(f"✓ Model saved to: {OUTPUT_DIR}")
 print(f"{'=' * 60}")
 print(f"\nLabel mapping: {label_map}")
 print(f"Best Macro F1: {best_f1:.4f}")
-print(f"Best Binary Threshold: {best_threshold:.4f}")
-print(f"Best Binary F1: {best_f1_binary:.4f}")
