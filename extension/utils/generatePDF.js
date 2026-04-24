@@ -1,582 +1,466 @@
-const PAGE_WIDTH = 595.28;
-const PAGE_HEIGHT = 841.89;
-const PAGE_MARGIN = 40;
-const LINE_HEIGHT = 14;
-const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
-const MAX_CHARS_PER_LINE = 88;
-const PAGE_CHAR_WIDTH = CONTENT_WIDTH / MAX_CHARS_PER_LINE;
+// ─── Page geometry ────────────────────────────────────────────────────────────
+const PW  = 595.28;   // A4 width  (points)
+const PH  = 841.89;   // A4 height (points)
+const ML  = 56;       // left margin
+const MR  = 56;       // right margin
+const MT  = 60;       // top margin
+const MB  = 60;       // bottom margin
+const CW  = PW - ML - MR;  // usable column width
 
-function sanitizeFileName(text) {
-  return String(text || 'Complaint')
-    .trim()
-    .replace(/[\\/:*?"<>|\s]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 64) || 'Complaint';
+// Font sizes (points)
+const F_TITLE   = 22;
+const F_H1      = 15;
+const F_H2      = 12;
+const F_BODY    = 10;
+const F_SMALL   =  9;
+
+// Leading (line gap) per font size
+const leading = (sz) => Math.round(sz * 1.55);
+
+// ─── ASCII safety ─────────────────────────────────────────────────────────────
+function a(v) {
+  return String(v ?? '').replace(/[^\x20-\x7E]/g, '?');
 }
 
-function escapePDFString(value) {
-  return String(value || '')
+function esc(v) {
+  return a(v)
     .replace(/\\/g, '\\\\')
     .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)')
-    .replace(/\r\n/g, '\\n')
-    .replace(/\r/g, '\\n')
-    .replace(/\n/g, '\\n');
+    .replace(/\)/g, '\\)');
 }
 
-function wrapLines(text, maxChars = MAX_CHARS_PER_LINE) {
-  const normalized = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function sanitizeFileName(t) {
+  return String(t || 'Complaint').trim().replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64) || 'Complaint';
+}
+
+function fmtDate(v) {
+  const d = v ? new Date(v) : new Date();
+  return isNaN(d) ? String(v || '') : d.toLocaleDateString('en-GB', { year:'numeric', month:'long', day:'numeric' });
+}
+
+function fmtDateTime(v) {
+  const d = v ? new Date(v) : new Date();
+  return isNaN(d) ? '' : d.toLocaleString('en-GB', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
+function riskTag(score) {
+  if (score >= 7) return 'HIGH RISK';
+  if (score >= 4) return 'MEDIUM RISK';
+  return 'LOW RISK';
+}
+
+function sevTag(sev) {
+  const s = (sev || '').toLowerCase();
+  if (s === 'high')   return 'HIGH';
+  if (s === 'medium') return 'MED';
+  return 'LOW';
+}
+
+// Wrap text to fit within `maxPt` points at font size `sz` (~6 pts per char for Helvetica 10pt)
+function wrapText(text, sz, maxPt) {
+  const avgCharW = sz * 0.52;
+  const maxChars = Math.floor(maxPt / avgCharW);
+  const words = a(text).split(/\s+/).filter(Boolean);
   const lines = [];
-  normalized.split('\n').forEach((paragraph) => {
-    const words = paragraph.split(' ').filter(Boolean);
-    let current = '';
-    words.forEach((word) => {
-      const candidate = current ? `${current} ${word}` : word;
-      if (candidate.length > maxChars) {
-        if (current) lines.push(current);
-        current = word;
-      } else {
-        current = candidate;
-      }
-    });
-    if (current) lines.push(current);
-    if (!words.length) lines.push('');
-  });
-  return lines;
-}
-
-function formatReportDate(value) {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return String(value || 'Unknown date');
-  return date.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
-}
-
-function formatDateTime(value) {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString('en-GB', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
-function makeBar(score, max = 10, width = 24) {
-  const filled = Math.round((Math.min(Math.max(score, 0), max) / max * width));
-  const empty = width - filled;
-  return '█'.repeat(filled) + '░'.repeat(empty);
-}
-
-function getRiskEmoji(score) {
-  if (score >= 7) return '🔴';
-  if (score >= 4) return '🟡';
-  return '🟢';
-}
-
-function getSeverityEmoji(severity) {
-  const s = (severity || '').toLowerCase();
-  if (s === 'high') return '🔴';
-  if (s === 'medium') return '🟡';
-  if (s === 'low') return '🟢';
-  return '⚪';
-}
-
-function blank(lines, count = 1) {
-  for (let i = 0; i < count; i++) lines.push('');
-}
-
-function rule(lines, char = '─', len = 60) {
-  lines.push(char.repeat(len));
-}
-
-function section(lines, title, level = 1) {
-  blank(lines);
-  if (level === 1) {
-    lines.push(`════════════════════════════════════════════════════════════════`);
-    lines.push(`  ${title.toUpperCase()}`);
-    lines.push(`════════════════════════════════════════════════════════════════`);
-  } else {
-    lines.push(`──────────────────────────────────────────────────`);
-    lines.push(`  ${title}`);
-    lines.push(`──────────────────────────────────────────────────`);
+  let cur = '';
+  for (const w of words) {
+    const cand = cur ? cur + ' ' + w : w;
+    if (cand.length > maxChars) { if (cur) lines.push(cur); cur = w; }
+    else cur = cand;
   }
-  blank(lines);
+  if (cur) lines.push(cur);
+  return lines.length ? lines : [''];
 }
 
-function toc(lines, items) {
-  items.forEach((item, i) => {
-    const num = String(i + 1).padStart(2, ' ');
-    const dots = '.'.repeat(Math.max(2, 56 - item.length));
-    lines.push(`  ${num}.  ${item}${dots}${i + 1}`);
-  });
+// ─── PDF primitive: a "block" is { sz, bold, text, indent, spaceAfter }
+// We accumulate blocks then paginate them.
+
+function txt(text, sz, opts = {}) {
+  return { text: a(text), sz, bold: opts.bold || false, indent: opts.indent || 0, spaceAfter: opts.spaceAfter ?? 0 };
 }
 
-function kv(lines, key, value, indent = 2) {
-  const v = String(value != null ? value : 'N/A').slice(0, 80);
-  const spaces = ' '.repeat(indent);
-  lines.push(`${spaces}${key}:  ${v}`);
+function gap(pt = 10) { return { gap: pt }; }
+
+function rule(pt = 0.5, spaceAfter = 12) { return { rule: true, ruleW: pt, spaceAfter }; }
+
+// ─── Section header helpers ───────────────────────────────────────────────────
+function h1(text)         { return [gap(18), txt(text, F_H1, { bold: true }), gap(4), rule(0.8, 10)]; }
+function h2(text)         { return [gap(14), txt(text, F_H2, { bold: true }), gap(2)]; }
+function body(text, indent=0) { return [txt(text, F_BODY, { indent })]; }
+function small(text, indent=0){ return [txt(text, F_SMALL, { indent })]; }
+function kv(key, val, indent=0){ return [txt(`${key}:  ${a(val ?? 'N/A')}`, F_BODY, { indent })]; }
+
+function push(arr, items) {
+  for (const item of (Array.isArray(items) ? items : [items])) arr.push(item);
 }
 
-function bullet(lines, text, bulletChar = '◆', maxLen = MAX_CHARS_PER_LINE) {
-  const wrapped = wrapLines(text, maxLen - 6);
-  wrapped.forEach((l, i) => lines.push(i === 0 ? `  ${bulletChar} ${l}` : `      ${l}`));
+// ─── Page builder ─────────────────────────────────────────────────────────────
+function buildCover(data, blocks) {
+  push(blocks, gap(24));
+  push(blocks, txt('CONSUMERSHIELD', F_TITLE, { bold: true }));
+  push(blocks, gap(4));
+  push(blocks, txt('Consumer Complaint Report', F_H2));
+  push(blocks, gap(16));
+  push(blocks, rule(1, 14));
+
+  const sev = (data.severity || 'Unknown').toUpperCase();
+  push(blocks, kv('Site',          data.company || data.analysis?.domain || 'Unknown'));
+  push(blocks, kv('Severity',      sev + ' RISK'));
+  push(blocks, kv('Submitted to',  'Central Consumer Protection Authority (CCPA), India'));
+  push(blocks, kv('Under',         'DPDP Act 2023  |  CCPA Guidelines 2023  |  CPA 2019'));
+  push(blocks, gap(14));
+  push(blocks, rule(0.5, 14));
+
+  push(blocks, kv('Report ID',   data.reportId));
+  push(blocks, kv('Date',        fmtDate(data.reportDate)));
+  push(blocks, kv('Generated',   fmtDateTime(Date.now())));
+  if (data.analysis?.url)    push(blocks, kv('URL',     data.analysis.url));
+  if (data.analysis?.domain) push(blocks, kv('Domain',  data.analysis.domain));
+  push(blocks, kv('Consumer',    data.name || 'Anonymous'));
+  push(blocks, gap(20));
+  push(blocks, rule(0.5, 4));
+
+  push(blocks, gap(10));
+  push(blocks, txt('Contents', F_H2, { bold: true }));
+  push(blocks, gap(6));
+  const sections = ['Risk Assessment', 'Dark Patterns Detected', 'Third-Party Trackers', 'Your Rights & How to Complain'];
+  sections.forEach((s, i) => push(blocks, txt(`  ${i + 1}.  ${s}`, F_BODY)));
 }
 
-function framed(lines, contentLines, frameChar = '─') {
-  const width = 60;
-  lines.push(`┌${frameChar.repeat(width)}┐`);
-  contentLines.forEach(l => lines.push(`│${l}${' '.repeat(Math.max(0, width - l.length))}│`));
-  lines.push(`└${frameChar.repeat(width)}┘`);
-}
+function buildRiskPage(data, blocks) {
+  push(blocks, h1('Risk Assessment'));
 
-function framedKeyValue(lines, data, width = 60) {
-  lines.push(`┌${'─'.repeat(width)}┐`);
-  data.forEach(([key, value]) => {
-    const v = String(value != null ? value : 'N/A').slice(0, width - 4);
-    lines.push(`│  ${key}:  ${v}${' '.repeat(Math.max(0, width - 6 - key.length - v.length))}│`);
-  });
-  lines.push(`└${'─'.repeat(width)}┘`);
-}
+  const priv = Number(data.analysis?.privacy?.riskScore  || 0);
+  const manip = Number(data.analysis?.manipulation?.riskScore || 0);
+  const patterns = (data.analysis?.manipulation?.patterns || []).length;
+  const trackers = (data.analysis?.privacy?.trackers || []).length;
+  const domains  = (data.analysis?.privacy?.detectedDomains || []).length;
 
-function framedText(lines, title, text, width = 60) {
-  lines.push(`┌─ ${title} ${'─'.repeat(Math.max(0, width - title.length - 4))}┐`);
-  const wrapped = wrapLines(text, width - 4);
-  wrapped.forEach(l => lines.push(`│${l}${' '.repeat(Math.max(0, width - l.length))}│`));
-  lines.push(`└${'─'.repeat(width)}┘`);
-}
+  // Quick stats row
+  push(blocks, gap(4));
+  push(blocks, txt(`Privacy Risk: ${priv.toFixed(1)} / 10   (${riskTag(priv)})`, F_BODY));
+  push(blocks, gap(6));
+  push(blocks, txt(`Manipulation Risk: ${manip.toFixed(1)} / 10   (${riskTag(manip)})`, F_BODY));
+  push(blocks, gap(14));
 
-function buildCoverPage(data, lines) {
-  blank(lines);
-  lines.push(`🛡️  CONSUMERSHIELD  —  OFFICIAL CONSUMER COMPLAINT REPORT`);
-  lines.push(`                  Automated Consumer Protection Analysis`);
-  blank(lines);
+  push(blocks, h2('At a Glance'));
+  push(blocks, kv('Dark Patterns Found',       patterns));
+  push(blocks, kv('Third-Party Trackers',      trackers));
+  push(blocks, kv('Third-Party Domains',       domains));
 
-  const severity = (data.severity || 'Unknown').toUpperCase();
-  const sevEmoji = severity === 'HIGH' ? '🔴' : severity === 'MEDIUM' ? '🟡' : '🟢';
-  framed(lines, [
-    `COMPLAINT AGAINST:  ${data.company || 'Unknown Website'}`,
-    `SEVERITY LEVEL:    ${sevEmoji}  ${severity} RISK`,
-    `SUBMITTED TO:     Central Consumer Protection Authority (CCPA), India`,
-    `UNDER ACTS:       DPDP Act 2023 | CCPA Guidelines 2023 | Consumer Protection Act 2019`,
-  ]);
-  blank(lines);
-
-  lines.push(`  TABLE OF CONTENTS`);
-  lines.push(`  ────────────────────────────────────────────────────`);
-  toc(lines, [
-    'Risk Assessment Summary',
-    'Dark Pattern Analysis',
-    'Third-Party Tracker Details',
-    'Summary of Evidence',
-    'Consumer Rights & Complaint Guidance',
-  ]);
-  blank(lines);
-
-  lines.push(`  REPORT DETAILS`);
-  lines.push(`  ────────────────────────────────────────────────────`);
-  kv(lines, 'Report ID', data.reportId);
-  kv(lines, 'Report Date', formatReportDate(data.reportDate));
-  kv(lines, 'Generated At', formatDateTime(Date.now()));
-  if (data.analysis?.url) kv(lines, 'URL Scanned', data.analysis.url);
-  if (data.analysis?.domain) kv(lines, 'Domain', data.analysis.domain);
-  kv(lines, 'Consumer', data.name || 'Anonymous');
-  blank(lines);
-  rule(lines, '═');
-}
-
-function buildRiskSummaryPage(data, lines) {
-  section(lines, 'Risk Assessment Summary');
-
-  const privacyScore = Number(data.analysis?.privacy?.riskScore || 0);
-  const manipulationScore = Number(data.analysis?.manipulation?.riskScore || 0);
-  const privacyBar = makeBar(privacyScore);
-  const manipulationBar = makeBar(manipulationScore);
-  const privacyEmoji = getRiskEmoji(privacyScore);
-  const manipulationEmoji = getRiskEmoji(manipulationScore);
-
-  blank(lines);
-  lines.push(`  PRIVACY RISK SCORE`);
-  blank(lines);
-  lines.push(`  ${privacyBar}  ${privacyScore.toFixed(1)} / 10.0`);
-  lines.push(`  ${privacyEmoji}  ${privacyScore >= 7 ? 'HIGH RISK' : privacyScore >= 4 ? 'MEDIUM RISK' : 'LOW RISK'}  —  ${getImpactText(privacyScore, 'privacy')}`);
-  blank(lines);
-
-  lines.push(`  MANIPULATION RISK SCORE`);
-  blank(lines);
-  lines.push(`  ${manipulationBar}  ${manipulationScore.toFixed(1)} / 10.0`);
-  lines.push(`  ${manipulationEmoji}  ${manipulationScore >= 7 ? 'HIGH RISK' : manipulationScore >= 4 ? 'MEDIUM RISK' : 'LOW RISK'}  —  ${getImpactText(manipulationScore, 'manipulation')}`);
-  blank(lines);
-
+  // Privacy flags
   const policy = data.analysis?.privacy?.policy || {};
   const flags = [];
-  if (policy.thirdPartySharing) flags.push('⚠️  Third-party data sharing without user consent');
-  if (policy.noOptOut) flags.push('⚠️  No opt-out mechanism provided');
-  if (policy.extensiveCollection) flags.push('⚠️  Extensive collection of personal data');
-  if (data.analysis?.privacy?.fingerprinting) flags.push('⚠️  Browser fingerprinting detected');
+  if (policy.thirdPartySharing)           flags.push('Third-party data sharing detected without clear consent');
+  if (policy.noOptOut)                    flags.push('No opt-out mechanism found');
+  if (policy.extensiveCollection)         flags.push('Extensive personal data collection observed');
+  if (data.analysis?.privacy?.fingerprinting) flags.push('Browser fingerprinting detected');
 
-  if (flags.length > 0) {
-    blank(lines);
-    lines.push(`  PRIVACY POLICY RED FLAGS`);
-    lines.push(`  ────────────────────────────────────────────────────`);
-    flags.forEach(f => bullet(lines, f));
+  if (flags.length) {
+    push(blocks, h2('Privacy Red Flags'));
+    flags.forEach(f => push(blocks, txt('  - ' + f, F_BODY)));
   }
-  blank(lines);
 
-  const trackers = data.analysis?.privacy?.trackers || [];
-  const totalPatterns = (data.analysis?.manipulation?.patterns || []).length;
-  const thirdPartyCount = trackers.filter(t => {
-    const domain = (data.analysis?.domain || '').replace('www.', '').toLowerCase();
-    const host = (t.hostname || t.url || '').replace('www.', '').toLowerCase();
-    return !host.includes(domain);
-  }).length;
-
-  lines.push(`  SUMMARY STATISTICS`);
-  lines.push(`  ────────────────────────────────────────────────────`);
-  kv(lines, 'Total Dark Patterns Detected', totalPatterns);
-  kv(lines, 'Total Third-Party Trackers', thirdPartyCount);
-  kv(lines, 'Third-Party Domains Contacted', (data.analysis?.privacy?.detectedDomains || []).length);
-  blank(lines);
-  rule(lines);
+  // What this means
+  push(blocks, h2('What This Means'));
+  if (manip >= 7) push(blocks, body('This site uses significant manipulative design. Your choices may have been influenced without your awareness.'));
+  else if (manip >= 4) push(blocks, body('Moderate manipulation detected. Some design choices may be nudging your decisions.'));
+  else push(blocks, body('Low manipulation detected. The site appears mostly fair in its design.'));
+  push(blocks, gap(4));
+  if (priv >= 7) push(blocks, body('Serious privacy concerns exist. Your data may be shared broadly with third parties.'));
+  else if (priv >= 4) push(blocks, body('Moderate privacy concerns. Review what data is collected before engaging further.'));
+  else push(blocks, body('Privacy risk is low. Standard data practices appear to be in place.'));
 }
 
-function getImpactText(score, type) {
-  if (type === 'privacy') {
-    if (score >= 7) return 'Significant privacy violations detected. Immediate attention recommended.';
-    if (score >= 4) return 'Moderate privacy concerns detected. Review recommended.';
-    return 'Minimal privacy risks detected. No immediate action required.';
-  } else {
-    if (score >= 7) return 'Significant dark patterns detected. Immediate attention recommended.';
-    if (score >= 4) return 'Moderate manipulative patterns detected. Review recommended.';
-    return 'Minimal manipulation detected. No immediate action required.';
-  }
-}
-
-function buildPatternsPage(data, lines) {
+function buildPatternsPage(data, blocks) {
   const patterns = data.analysis?.manipulation?.patterns || [];
-  section(lines, 'Dark Pattern Analysis');
+  push(blocks, h1('Dark Patterns Detected'));
 
-  if (patterns.length === 0) {
-    lines.push(`  🟢  No dark patterns detected on this page.`);
-    blank(lines);
+  if (!patterns.length) {
+    push(blocks, gap(8));
+    push(blocks, body('No dark patterns were detected on this site.'));
     return;
   }
 
-  lines.push(`  Total Dark Patterns Detected: ${patterns.length}`);
-  blank(lines);
+  push(blocks, gap(4));
+  push(blocks, small(`${patterns.length} pattern(s) found`));
+  push(blocks, gap(8));
 
   patterns.forEach((p, i) => {
-    const sevEmoji = getSeverityEmoji(p.severity);
-    const sevLabel = (p.severity || 'unknown').toUpperCase();
-    const name = p.name || p.type || 'Unknown Pattern';
-    const conf = p.confidence ? `${(p.confidence * 100).toFixed(0)}%` : 'N/A';
-    const bar = makeBar((p.confidence || 0) * 10);
-    const occ = p.occurrence_count || 1;
+    const name  = a(p.name || p.type || 'Unknown Pattern');
+    const sev   = sevTag(p.severity);
+    const conf  = p.confidence ? `${(p.confidence * 100).toFixed(0)}% confidence` : '';
 
-    const cardLines = [];
-
-    cardLines.push(`PATTERN #${i + 1}  ${sevEmoji}  ${sevLabel} RISK`);
-    cardLines.push(`──────────────────────────────────────────────────`);
-    cardLines.push(`  Name:         ${name}`);
-    cardLines.push(`  Category:     ${p.type || 'unknown'}`);
-    cardLines.push(`  Confidence:   ${conf}  ${bar}`);
-    cardLines.push(`  Occurrences:  ${occ}`);
+    push(blocks, gap(10));
+    push(blocks, txt(`${i + 1}.  ${name}  [${sev}]${conf ? '  ' + conf : ''}`, F_BODY, { bold: true }));
 
     if (p.description) {
-      cardLines.push(`  ───────────────────────────────────────────`);
-      const descWrapped = wrapLines(p.description, 56);
-      cardLines.push(`  Description:`);
-      descWrapped.forEach(l => cardLines.push(`    ${l}`));
+      const wrapped = wrapText(p.description, F_BODY, CW - 16);
+      wrapped.forEach(l => push(blocks, txt('    ' + l, F_BODY)));
     }
-
-    if (p.text) {
-      cardLines.push(`  ───────────────────────────────────────────`);
-      const evWrapped = wrapLines(p.text.slice(0, 300), 56);
-      cardLines.push(`  Evidence:`);
-      evWrapped.forEach(l => cardLines.push(`    ${l}`));
+    if (p.text && p.text !== p.description) {
+      push(blocks, gap(2));
+      push(blocks, small('    Evidence: ' + a(p.text).slice(0, 180), 0));
     }
-
     if (p.law) {
-      cardLines.push(`  ───────────────────────────────────────────`);
-      const lawWrapped = wrapLines(p.law, 56);
-      cardLines.push(`  Regulatory Reference:`);
-      lawWrapped.forEach(l => cardLines.push(`    ${l}`));
+      push(blocks, small('    Law: ' + a(p.law), 0));
     }
-
-    if (p.penalty) {
-      const penaltyStr = typeof p.penalty === 'object'
-        ? `${p.penalty.min || 'N/A'} — ${p.penalty.max || 'N/A'}`
-        : p.penalty;
-      cardLines.push(`  Penalty:      ${penaltyStr}`);
-    }
-
-    framed(lines, cardLines);
-    blank(lines);
   });
-
-  rule(lines);
 }
 
-function buildTrackersPage(data, lines) {
+function buildTrackersPage(data, blocks) {
   const trackers = data.analysis?.privacy?.trackers || [];
-  section(lines, 'Third-Party Tracker Details');
+  const domains  = data.analysis?.privacy?.detectedDomains || [];
+  push(blocks, h1('Third-Party Trackers'));
 
-  if (trackers.length === 0) {
-    lines.push(`  🟢  No third-party trackers detected.`);
-    blank(lines);
+  if (!trackers.length) {
+    push(blocks, gap(8));
+    push(blocks, body('No third-party trackers were detected.'));
     return;
   }
 
-  lines.push(`  Total Trackers Detected: ${trackers.length}`);
-  lines.push(`  ────────────────────────────────────────────────────`);
-  blank(lines);
+  push(blocks, gap(4));
+  push(blocks, small(`${trackers.length} tracker(s) detected across ${domains.length} domain(s)`));
+  push(blocks, gap(10));
 
-  const displayTrackers = trackers.slice(0, 30);
-  displayTrackers.forEach((t, i) => {
-    const name = (t.name || t.hostname || t.url || 'Unknown').slice(0, 30);
-    const cat = (t.category || t.type || 'tracker').slice(0, 12);
-    const company = (t.company || t.entity || '-').slice(0, 25);
-    const host = (t.hostname || '-').slice(0, 35);
-
-    lines.push(`  Tracker ${String(i + 1).padStart(2, '0')}  ◆  ${name}`);
-    lines.push(`           Type: ${cat}  |  Company: ${company}`);
-    lines.push(`           Host: ${host}`);
-    blank(lines);
+  const show = trackers.slice(0, 20);
+  show.forEach((t, i) => {
+    const name    = a((t.name || t.hostname || t.url || 'Unknown').slice(0, 40));
+    const cat     = a(t.category || t.type || 'tracker');
+    const company = t.company || t.entity ? `  (${a((t.company || t.entity).slice(0, 30))})` : '';
+    push(blocks, txt(`${String(i + 1).padStart(2, ' ')}.  ${name}${company}`, F_BODY));
+    push(blocks, small(`      Type: ${cat}    Host: ${a((t.hostname || '-').slice(0, 40))}`, 0));
+    push(blocks, gap(3));
   });
 
-  if (trackers.length > 30) {
-    lines.push(`  (... ${trackers.length - 30} more trackers not listed ...)`);
-    blank(lines);
+  if (trackers.length > 20) {
+    push(blocks, gap(4));
+    push(blocks, small(`... and ${trackers.length - 20} more trackers not shown.`));
   }
 
-  const domains = data.analysis?.privacy?.detectedDomains || [];
-  if (domains.length > 0) {
-    blank(lines);
-    lines.push(`  Third-Party Domains Contacted: ${domains.length}`);
-    lines.push(`  ────────────────────────────────────────────────────`);
-    lines.push(`  ${domains.slice(0, 15).join(', ')}`);
-    if (domains.length > 15) {
-      lines.push(`  ...and ${domains.length - 15} more.`);
-    }
+  if (domains.length) {
+    push(blocks, h2('Domains Contacted'));
+    const shown = domains.slice(0, 12).map(a).join(', ');
+    const wrapped = wrapText(shown, F_SMALL, CW);
+    wrapped.forEach(l => push(blocks, small(l)));
+    if (domains.length > 12) push(blocks, small(`... and ${domains.length - 12} more.`));
   }
-
-  blank(lines);
-  rule(lines);
 }
 
-function buildEvidencePage(data, lines) {
-  section(lines, 'Summary of Evidence');
+function buildRightsPage(data, blocks) {
+  push(blocks, h1('Your Rights & How to Complain'));
 
-  const patterns = data.analysis?.manipulation?.patterns || [];
-  if (patterns.length > 0) {
-    lines.push(`  DETECTED PATTERNS`);
-    lines.push(`  ────────────────────────────────────────────────────`);
-    patterns.forEach(p => {
-      const conf = p.confidence ? `${(p.confidence * 100).toFixed(0)}%` : 'N/A';
-      const sevEmoji = getSeverityEmoji(p.severity);
-      const sevLabel = (p.severity || 'unknown').toUpperCase();
-      lines.push(`  ${sevEmoji}  ${p.name || p.type}  —  ${sevLabel}  (${conf} confidence)`);
-    });
-    blank(lines);
-  }
+  push(blocks, h2('Rights under DPDP Act 2023'));
+  [
+    'Withdraw consent at any time without penalty',
+    'Know how your personal data is used',
+    'Correct or erase inaccurate data',
+    'File a grievance with the company DPO',
+    'Escalate to the Data Protection Board if unresolved',
+  ].forEach((r, i) => push(blocks, txt(`  ${i + 1}.  ${r}`, F_BODY)));
 
-  const domains = data.analysis?.privacy?.detectedDomains || [];
-  if (domains.length > 0) {
-    lines.push(`  THIRD-PARTY DOMAINS CONTACTED: ${domains.length}`);
-    lines.push(`  ────────────────────────────────────────────────────`);
-    lines.push(`  ${domains.slice(0, 15).join(', ')}`);
-    if (domains.length > 15) lines.push(`  ...and ${domains.length - 15} more.`);
-    blank(lines);
-  }
+  push(blocks, h2('Rights under CCPA Guidelines 2023'));
+  [
+    'Not to be subjected to dark patterns in digital services',
+    'To receive clear and truthful product information',
+    'To file complaints at ccpa.gov.in',
+  ].forEach(r => push(blocks, txt('  -  ' + r, F_BODY)));
 
-  if (data.laws?.length > 0) {
-    section(lines, 'Applicable Laws & Regulations', 2);
-    data.laws.forEach(l => bullet(lines, l));
-    blank(lines);
-  }
+  push(blocks, h2('How to Act'));
+  [
+    'Save this report as evidence.',
+    "Contact the company's Data Protection Officer (DPO) first.",
+    'If unresolved within 30 days, escalate to the Data Protection Board.',
+    'For consumer disputes: call 1800-11-4000 or visit ingram.gov.in.',
+    'For dark patterns: file at ccpa.gov.in.',
+  ].forEach((s, i) => push(blocks, txt(`  Step ${i + 1}:  ${s}`, F_BODY)));
 
-  if (data.issues?.length > 0) {
-    section(lines, 'Complaint Issues', 2);
-    data.issues.forEach(issue => bullet(lines, issue));
-    blank(lines);
-  }
-
-  rule(lines);
-}
-
-function buildRightsPage(data, lines) {
-  section(lines, 'Consumer Rights & Complaint Guidance');
-
-  lines.push(`  RIGHTS UNDER DPDP ACT, 2023`);
-  lines.push(`  ────────────────────────────────────────────────────`);
-  const dpdpRights = [
-    'Right to Consent — withdraw consent at any time without detriment',
-    'Right to Information — know how and why personal data is being processed',
-    'Right to Correction & Erasure — correct inaccurate data, delete personal data',
-    'Right to Grievance Redressal — file complaints with the Data Protection Officer (DPO)',
-    'Right to Nominated Data Protection Officer assistance',
-  ];
-  dpdpRights.forEach((r, i) => {
-    lines.push(`  ${i + 1}.  ${r}`);
-  });
-  blank(lines);
-
-  lines.push(`  RIGHTS UNDER CCPA GUIDELINES 2023`);
-  lines.push(`  ────────────────────────────────────────────────────`);
-  lines.push(`  ◆  Right not to be a victim of dark patterns in e-commerce and digital services`);
-  lines.push(`  ◆  Right to clear and truthful product information`);
-  lines.push(`  ◆  Right to file complaints at ccpa.gov.in or CCPA helpline`);
-  blank(lines);
-
-  lines.push(`  RIGHTS UNDER CONSUMER PROTECTION ACT, 2019`);
-  lines.push(`  ────────────────────────────────────────────────────`);
-  lines.push(`  ◆  Right not to be a victim of unfair trade practices`);
-  lines.push(`  ◆  Right to file complaints at District Consumer Forum`);
-  lines.push(`  ◆  Consumer Helpline: 1800-11-4000 (National Consumer Helpline)`);
-  lines.push(`  ◆  Online Portal: ingram.gov.in (Integrated Grievance Redressal Mechanism)`);
-  blank(lines);
-
-  section(lines, 'How to File a Complaint', 2);
-  const steps = [
-    'Download and preserve this report as evidence.',
-    'File a complaint with the company\'s Data Protection Officer (DPO).',
-    'If unresolved within 30 days, escalate to the Data Protection Board under DPDP Act 2023.',
-    'For consumer disputes, approach the nearest District Consumer Forum or call 1800-11-4000.',
-    'For dark pattern complaints, visit ccpa.gov.in or contact the CCPA grievance portal.',
-  ];
-  steps.forEach((step, i) => {
-    lines.push(`  Step ${i + 1}:  ${step}`);
-  });
-  blank(lines);
-
-  section(lines, 'Complaint Letter Draft', 2);
-  const letterLines = [
-    `Subject: Complaint Against Dark Patterns & Privacy Violations — ${data.company || '[Website]'}`,
+  push(blocks, h2('Template Complaint Letter'));
+  push(blocks, gap(4));
+  const company = a(data.company || '[Website Name]');
+  [
+    `Subject: Complaint Against Dark Patterns & Privacy Violations - ${company}`,
     ``,
     `Dear Sir/Madam,`,
     ``,
-    `I am writing to file a formal complaint regarding deceptive dark patterns and`,
-    `privacy violations observed on the website [URL].`,
+    `I am writing to formally complain about deceptive dark patterns and privacy`,
+    `violations I observed on ${company}.`,
     ``,
-    `The ConsumerShield browser extension detected the following issues:`,
-  ];
-  letterLines.forEach(l => lines.push(`  ${l}`));
-  if (data.issues?.length > 0) {
-    data.issues.forEach(issue => lines.push(`    ◆  ${issue}`));
+    `The ConsumerShield extension detected the following issues:`,
+  ].forEach(l => push(blocks, txt('  ' + l, F_BODY)));
+
+  if (data.issues?.length) {
+    data.issues.forEach(issue => push(blocks, txt('    - ' + a(issue), F_BODY)));
   }
-  const letterFooter = [
+
+  [
     ``,
-    `I request your office to investigate this matter and take appropriate action`,
-    `under the DPDP Act 2023, CCPA Guidelines 2023, and Consumer Protection Act 2019.`,
+    `I request your office to investigate and take action under the DPDP Act 2023,`,
+    `CCPA Guidelines 2023, and Consumer Protection Act 2019.`,
     ``,
     `Regards,`,
-    `[Your Name]`,
-    `[Your Contact Details]`,
-    `[Date]`,
-  ];
-  letterFooter.forEach(l => lines.push(`  ${l}`));
-
-  blank(lines);
-  rule(lines);
+    `[Your Name]  |  [Contact]  |  [Date]`,
+  ].forEach(l => push(blocks, txt('  ' + l, F_BODY)));
 }
 
-function buildPageContent(lines, pageNum, totalPages) {
-  const pageLines = [];
-  pageLines.push('BT');
-  pageLines.push('/F1 12 Tf');
-  pageLines.push(`${LINE_HEIGHT} TL`);
-  pageLines.push(`${PAGE_MARGIN} ${PAGE_HEIGHT - PAGE_MARGIN} Td`);
-  lines.forEach((line, index) => {
-    pageLines.push(`(${escapePDFString(line)}) Tj`);
-    if (index < lines.length - 1) {
-      pageLines.push('T*');
-    }
-  });
-  pageLines.push('ET');
-  return pageLines.join('\n');
-}
+// ─── PDF rendering engine ─────────────────────────────────────────────────────
 
 function makePDFObject(id, body) {
   return `${id} 0 obj\n${body}\nendobj\n`;
 }
 
-function buildPDFDocument(lines) {
-  const pageLineCount = Math.floor((PAGE_HEIGHT - PAGE_MARGIN * 2) / LINE_HEIGHT);
+// Render all blocks into pages. Returns array of page content strings.
+function paginate(blocks) {
+  const usableH = PH - MT - MB;
   const pages = [];
-  for (let i = 0; i < lines.length; i += pageLineCount) {
-    pages.push(lines.slice(i, i + pageLineCount));
+  let ops = [];      // current page PDF ops
+  let y = PH - MT;  // current Y cursor (PDF coords, top-down)
+
+  function newPage() {
+    if (ops.length) pages.push(ops.join('\n'));
+    ops = [];
+    y = PH - MT;
   }
-  const totalPages = pages.length;
 
+  function ensure(needed) {
+    if (y - needed < MB) newPage();
+  }
+
+  function drawText(text, sz, bold, xOff) {
+    const font = bold ? '/F2' : '/F1';
+    ops.push(`${font} ${sz} Tf`);
+    ops.push(`${ML + xOff} ${y} Td`);
+    ops.push(`(${esc(text)}) Tj`);
+    ops.push('0 0 Td'); // reset relative position for next absolute Td
+  }
+
+  function drawRule(ruleW) {
+    ops.push(`${ruleW} w`);
+    ops.push(`${ML} ${y} m`);
+    ops.push(`${PW - MR} ${y} l`);
+    ops.push('S');
+  }
+
+  // Always start with BT
+  ops.push('BT');
+  let inBT = true;
+
+  function closeBT()  { if (inBT) { ops.push('ET'); inBT = false; } }
+  function openBT()   { if (!inBT) { ops.push('BT'); inBT = true; } }
+
+  for (const block of blocks) {
+    if (block.gap !== undefined) {
+      y -= block.gap;
+      if (y < MB) newPage();
+      continue;
+    }
+
+    if (block.rule) {
+      ensure(block.spaceAfter + 4);
+      closeBT();
+      drawRule(block.ruleW || 0.5);
+      y -= (block.spaceAfter || 4);
+      continue;
+    }
+
+    // Text block — wrap to CW
+    const wrapped = wrapText(block.text, block.sz, CW - block.indent);
+    const lh = leading(block.sz);
+
+    for (const line of wrapped) {
+      ensure(lh + 2);
+      openBT();
+      ops.push(`1 0 0 1 0 0 Tm`); // reset text matrix
+      drawText(line, block.sz, block.bold, block.indent || 0);
+      y -= lh;
+    }
+
+    if (block.spaceAfter) y -= block.spaceAfter;
+  }
+
+  closeBT();
+  if (ops.length) pages.push(ops.join('\n'));
+  return pages;
+}
+
+function buildPDFDocument(pageContents) {
+  const totalPages = pageContents.length;
   const objects = [];
-  objects.push(makePDFObject(1, '<< /Type /Catalog /Pages 2 0 R >>'));
-  objects.push(makePDFObject(2, `<< /Type /Pages /Kids [${pages.map((_, index) => `${4 + index * 2} 0 R`).join(' ')}] /Count ${totalPages} >>`));
-  objects.push(makePDFObject(3, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'));
 
-  pages.forEach((pageLines, index) => {
-    const pageId = 4 + index * 2;
-    const contentId = 5 + index * 2;
-    const content = buildPageContent(pageLines, index + 1, totalPages);
-    const contentLength = new TextEncoder().encode(`${content}\n`).length;
-    objects.push(makePDFObject(pageId, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentId} 0 R >>`));
-    objects.push(makePDFObject(contentId, `<< /Length ${contentLength} >>\nstream\n${content}\nendstream`));
+  // Font resources: F1=Helvetica, F2=Helvetica-Bold
+  const fontRes = '<< /F1 3 0 R /F2 4 0 R >>';
+  const resources = `<< /Font ${fontRes} >>`;
+
+  objects.push(makePDFObject(1, '<< /Type /Catalog /Pages 2 0 R >>'));
+  const kidRefs = pageContents.map((_, i) => `${5 + i * 2} 0 R`).join(' ');
+  objects.push(makePDFObject(2, `<< /Type /Pages /Kids [${kidRefs}] /Count ${totalPages} >>`));
+  objects.push(makePDFObject(3, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'));
+  objects.push(makePDFObject(4, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>'));
+
+  pageContents.forEach((content, i) => {
+    const pageId    = 5 + i * 2;
+    const contentId = 6 + i * 2;
+    const len = content.length;
+    objects.push(makePDFObject(pageId, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW} ${PH}] /Resources ${resources} /Contents ${contentId} 0 R >>`));
+    objects.push(makePDFObject(contentId, `<< /Length ${len} >>\nstream\n${content}\nendstream`));
   });
 
   const header = '%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
   const encoder = new TextEncoder();
   let offset = encoder.encode(header).length;
   const offsets = [0];
-  const bodyParts = [];
-  objects.forEach((obj) => {
+  const parts = [];
+
+  objects.forEach(obj => {
     offsets.push(offset);
-    bodyParts.push(obj);
+    parts.push(obj);
     offset += encoder.encode(obj).length;
   });
-  const xrefLines = ['xref', `0 ${offsets.length}`, '0000000000 65535 f '];
-  for (let i = 1; i < offsets.length; i += 1) {
-    xrefLines.push(`${String(offsets[i]).padStart(10, '0')} 00000 n `);
+
+  const xref = ['xref', `0 ${offsets.length}`, '0000000000 65535 f '];
+  for (let i = 1; i < offsets.length; i++) {
+    xref.push(`${String(offsets[i]).padStart(10, '0')} 00000 n `);
   }
   const trailer = `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${offset}\n%%EOF\n`;
-  return encoder.encode(header + bodyParts.join('') + xrefLines.join('\n') + '\n' + trailer);
+  return encoder.encode(header + parts.join('') + xref.join('\n') + '\n' + trailer);
 }
 
 function downloadPDF(filename, blob) {
   const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 }
 
+// ─── Public entry point ───────────────────────────────────────────────────────
 export function generateComplaintPDF(data = {}) {
+  const reportId   = data.reportId || `CS-${Date.now()}`;
   const reportDate = data.reportDate || new Date().toISOString();
-  const reportId = data.reportId || `CS-${Date.now()}`;
   const pdfData = {
     ...data,
-    reportDate,
     reportId,
-    issues: data.issues || [],
-    laws: data.laws || [],
+    reportDate,
+    issues:   data.issues   || [],
+    laws:     data.laws     || [],
     severity: data.severity || 'Unknown',
   };
 
-  const lines = [];
-  buildCoverPage(pdfData, lines);
-  buildRiskSummaryPage(pdfData, lines);
-  buildPatternsPage(pdfData, lines);
-  buildTrackersPage(pdfData, lines);
-  buildEvidencePage(pdfData, lines);
-  buildRightsPage(pdfData, lines);
+  const blocks = [];
+  buildCover(pdfData, blocks);
+  buildRiskPage(pdfData, blocks);
+  buildPatternsPage(pdfData, blocks);
+  buildTrackersPage(pdfData, blocks);
+  buildRightsPage(pdfData, blocks);
 
-  blank(lines, 2);
-  lines.push(`════════════════════════════════════════════════════════════════`);
-  lines.push(`  🛡️  ConsumerShield — Automated Consumer Protection Analysis`);
-  lines.push(`  This report is not a legal document and must be reviewed by a qualified`);
-  lines.push(`  consumer protection advisor before filing any formal complaint.`);
-  lines.push(`════════════════════════════════════════════════════════════════`);
-  lines.push(`  Report ID: ${reportId}  |  Generated: ${formatDateTime(Date.now())}`);
-  lines.push('');
+  // Footer note
+  push(blocks, [gap(20), rule(0.5, 6)]);
+  push(blocks, small('This report is auto-generated by ConsumerShield and is not a legal document.'));
+  push(blocks, small(`Report ID: ${reportId}   Generated: ${fmtDateTime(Date.now())}`));
 
-  const pdfBytes = buildPDFDocument(lines);
-  const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-  const filename = `Complaint_${sanitizeFileName(pdfData.company || 'ConsumerShield')}.pdf`;
-  downloadPDF(filename, blob);
+  const pageContents = paginate(blocks);
+  const bytes = buildPDFDocument(pageContents);
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  downloadPDF(`Complaint_${sanitizeFileName(pdfData.company || 'ConsumerShield')}.pdf`, blob);
 }
