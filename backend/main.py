@@ -156,16 +156,50 @@ except Exception as e:
 
 # ── Local BERT model for dark pattern classification ──────────
 LOCAL_NLP_AVAILABLE = False
+BERT_ID_TO_LABEL: Dict[int, str] = {}
+BERT_LABEL_TO_ID: Dict[str, int] = {}
 try:
-    from transformers import pipeline as hf_pipeline
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline as hf_pipeline
+    from peft import PeftModel
 
-    print("[ConsumerShield] Loading local BERT model...")
-    # Using ConsumerShield fine-tuned model for multi-class dark pattern detection
-    nlp_classifier = hf_pipeline("text-classification", model="./consumershield-roberta-final")
+    print("[ConsumerShield] Loading local dark-pattern model...")
+    model_dir = os.path.join(REPO_DIR, "consumershield-roberta-final")
+
+    # Prefer adapter metadata so base model always matches training/export config.
+    adapter_config_path = os.path.join(model_dir, "adapter_config.json")
+    base_model_name = "roberta-base"
+    if os.path.isfile(adapter_config_path):
+        with open(adapter_config_path, "r", encoding="utf-8") as f:
+            adapter_cfg = json.load(f)
+        base_model_name = str(adapter_cfg.get("base_model_name_or_path") or base_model_name)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+
+    base_model = AutoModelForSequenceClassification.from_pretrained(
+        base_model_name,
+        num_labels=7,
+    )
+    model = PeftModel.from_pretrained(base_model, model_dir)
+
+    label_map_path = os.path.join(model_dir, "label_map.json")
+    if os.path.isfile(label_map_path):
+        with open(label_map_path, "r", encoding="utf-8") as f:
+            label_map = json.load(f)
+        BERT_ID_TO_LABEL = {int(v): str(k) for k, v in label_map.items()}
+        BERT_LABEL_TO_ID = {label: idx for idx, label in BERT_ID_TO_LABEL.items()}
+        model.config.id2label = BERT_ID_TO_LABEL
+        model.config.label2id = BERT_LABEL_TO_ID
+
+    nlp_classifier = hf_pipeline(
+        "text-classification",
+        model=model,
+        tokenizer=tokenizer,
+        truncation=True,
+    )
     LOCAL_NLP_AVAILABLE = True
-    print("[ConsumerShield] Local BERT loaded successfully!")
+    print(f"[ConsumerShield] Local dark-pattern model loaded successfully! base={base_model_name}")
 except Exception as e:
-    print(f"[ConsumerShield] Failed to load BERT: {e}")
+    print(f"[ConsumerShield] Failed to load local model: {e}")
 
 # ── Severity order for pattern classification ─────────────────
 SEVERITY_ORDER = {"high": 3, "medium": 2, "low": 1}
@@ -1244,12 +1278,22 @@ async def make_ai_insight(
                 
                 # Classify each pattern individually
                 bert_result = nlp_classifier(text)
+                top_result = bert_result[0] if isinstance(bert_result, list) else bert_result
+
+                raw_label = str(top_result.get("label", "unknown"))
+                mapped_label = raw_label
+                if raw_label.startswith("LABEL_"):
+                    try:
+                        label_idx = int(raw_label.split("_", 1)[1])
+                        mapped_label = BERT_ID_TO_LABEL.get(label_idx, raw_label)
+                    except (TypeError, ValueError):
+                        mapped_label = raw_label
                 
                 results.append({
                     "pattern_type": getattr(pattern, 'type', 'unknown'),
                     "pattern_name": getattr(pattern, 'name', 'unknown'),
-                    "label": bert_result[0].get("label", "unknown"),
-                    "confidence": round(bert_result[0].get("score", 0.0) * 100, 1),
+                    "label": mapped_label,
+                    "confidence": round(top_result.get("score", 0.0) * 100, 1),
                     "text_analyzed": text[:100]  # Store first 100 chars for display
                 })
             

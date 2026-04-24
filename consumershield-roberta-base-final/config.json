@@ -1,0 +1,9 @@
+{
+  "model_name": "roberta-base",
+  "lora_r": 8,
+  "lora_alpha": 16,
+  "batch_size": 8,
+  "epochs": 5,
+  "max_length": 128,
+  "best_macro_f1": 0.984997786548959
+}
