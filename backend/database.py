@@ -5,34 +5,26 @@ Stores analysis reports for fast UI loading, while blockchain anchoring can
 complete asynchronously and update each record's integrity status.
 """
 
-import json
 import os
+import uuid
 from datetime import datetime
 from typing import Any, Dict, Generator, List
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, create_engine, event, text
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, create_engine
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_FILE_PATH = os.path.join(BACKEND_DIR, "consumershield.db")
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_FILE_PATH}")
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is required")
 
-_MIGRATION_COMPLETED = False
-
-# SQLite needs check_same_thread=False when using FastAPI request/session pattern.
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True
+)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
-
-
-if DATABASE_URL.startswith("sqlite"):
-    @event.listens_for(engine, "connect")
-    def _set_sqlite_pragma(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
-        cursor.close()
 
 
 class Base(DeclarativeBase):
@@ -42,21 +34,19 @@ class Base(DeclarativeBase):
 class ReportRecord(Base):
     __tablename__ = "reports"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    report_id = Column(String(36), unique=True, nullable=False, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     url = Column(Text, nullable=False)
     domain = Column(String(255), nullable=False, index=True)
 
-    # Primary report ledger fields (single source of truth)
     risk_score = Column(Float, nullable=False, default=0.0, index=True)
-    detected_patterns = Column(Text, nullable=False, default="[]")
-    details = Column(Text, nullable=True)
+    detected_patterns = Column(JSONB, nullable=False, default=lambda: [])
+    details = Column(JSONB, nullable=True)
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     blockchain_proof = Column(Boolean, nullable=False, default=False, index=True)
     blockchain_tx_hash = Column(String(100), nullable=True, index=True)
 
     report_hash = Column(String(100), nullable=False, index=True)
-    canonical_payload = Column(Text, nullable=False)
+    canonical_payload = Column(JSONB, nullable=False)
 
     tx_hash = Column(String(80), nullable=True, index=True)
     anchor_status = Column(String(24), nullable=False, default="pending", index=True)
@@ -71,87 +61,14 @@ class ReportRecord(Base):
 
     pattern_count = Column(Integer, nullable=False, default=0)
     tracker_count = Column(Integer, nullable=False, default=0)
-    pattern_names_json = Column(Text, nullable=False, default="[]")
+    pattern_names_json = Column(JSONB, nullable=False, default=lambda: [])
 
     combined_insight = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
 def init_db() -> None:
-    global _MIGRATION_COMPLETED
     Base.metadata.create_all(bind=engine)
-    _ensure_reports_columns()
-    if not _MIGRATION_COMPLETED:
-        _backfill_reports_defaults()
-        _MIGRATION_COMPLETED = True
-
-
-def _ensure_reports_columns() -> None:
-    """Best-effort migration for environments with pre-existing reports table."""
-    required_columns = {
-        "risk_score": "FLOAT DEFAULT 0.0",
-        "detected_patterns": "TEXT DEFAULT '[]'",
-        "details": "TEXT",
-        "timestamp": "DATETIME",
-        "blockchain_proof": "BOOLEAN DEFAULT 0",
-        "blockchain_tx_hash": "TEXT",
-        "verification_status": "TEXT DEFAULT 'not_verified'",
-        "verification_error": "TEXT",
-        "verified_at": "DATETIME",
-    }
-
-    with engine.begin() as conn:
-        try:
-            rows = conn.execute(text("PRAGMA table_info(reports)")).fetchall()
-        except Exception:
-            return
-
-        existing = {str(row[1]) for row in rows}
-        for column_name, ddl in required_columns.items():
-            if column_name in existing:
-                continue
-            conn.execute(text(f"ALTER TABLE reports ADD COLUMN {column_name} {ddl}"))
-
-
-def _backfill_reports_defaults() -> None:
-    with engine.begin() as conn:
-        conn.execute(text(
-            "UPDATE reports "
-            "SET risk_score = COALESCE(risk_score, overall_risk, 0.0)"
-        ))
-        conn.execute(text(
-            "UPDATE reports "
-            "SET detected_patterns = COALESCE(NULLIF(detected_patterns, ''), pattern_names_json, '[]')"
-        ))
-        conn.execute(text(
-            "UPDATE reports "
-            "SET details = COALESCE(NULLIF(details, ''), combined_insight, '')"
-        ))
-        conn.execute(text(
-            "UPDATE reports "
-            "SET timestamp = COALESCE(timestamp, created_at, CURRENT_TIMESTAMP)"
-        ))
-        conn.execute(text(
-            "UPDATE reports "
-            "SET blockchain_tx_hash = COALESCE(NULLIF(blockchain_tx_hash, ''), tx_hash)"
-        ))
-        conn.execute(text(
-            "UPDATE reports "
-            "SET blockchain_proof = CASE "
-            "  WHEN COALESCE(NULLIF(blockchain_tx_hash, ''), NULLIF(tx_hash, '')) IS NOT NULL THEN 1 "
-            "  ELSE COALESCE(blockchain_proof, 0) "
-            "END"
-        ))
-        conn.execute(text(
-            "UPDATE reports "
-            "SET verification_status = CASE "
-            "  WHEN COALESCE(NULLIF(verification_status, ''), '') <> '' THEN verification_status "
-            "  WHEN anchor_status = 'anchored' THEN 'pending' "
-            "  WHEN anchor_status = 'not_required' THEN 'not_required' "
-            "  WHEN anchor_status = 'not_requested' THEN 'not_requested' "
-            "  ELSE 'not_verified' "
-            "END"
-        ))
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -202,28 +119,25 @@ def build_canonical_payload(
     }
 
 
+import json
+
 def canonical_payload_to_json(payload: Dict[str, Any]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def encode_pattern_names(pattern_names: List[str]) -> str:
-    normalized = [str(name).strip() for name in pattern_names if str(name).strip()]
-    return json.dumps(sorted(set(normalized)), separators=(",", ":"))
+def encode_pattern_names(pattern_names: List[str]) -> List[str]:
+    return sorted({str(name).strip() for name in pattern_names if str(name).strip()})
 
 
-def decode_pattern_names(raw: str) -> List[str]:
-    try:
-        parsed = json.loads(raw or "[]")
-        if isinstance(parsed, list):
-            return [str(item) for item in parsed]
-    except Exception:
-        pass
+def decode_pattern_names(raw: List[str]) -> List[str]:
+    if isinstance(raw, list):
+        return [str(item) for item in raw]
     return []
 
 
-def encode_detected_patterns(detected_patterns: List[str]) -> str:
+def encode_detected_patterns(detected_patterns: List[str]) -> List[str]:
     return encode_pattern_names(detected_patterns)
 
 
-def decode_detected_patterns(raw: str) -> List[str]:
+def decode_detected_patterns(raw: List[str]) -> List[str]:
     return decode_pattern_names(raw)

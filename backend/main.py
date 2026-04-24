@@ -21,12 +21,19 @@ import uuid
 import ipaddress
 from contextlib import asynccontextmanager
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables FIRST (before database import)
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR = os.path.dirname(BACKEND_DIR)
+load_dotenv(os.path.join(BACKEND_DIR, ".env"))
+load_dotenv(os.path.join(REPO_DIR, ".env"))
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-from dotenv import load_dotenv
-import json
 from sqlalchemy.orm import Session
 
 from regulatory_database import (
@@ -56,12 +63,6 @@ from ethereum_anchor import (
     verify_report_hash_on_chain,
     DuplicateReportAnchoringError,
 )
-
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR = os.path.dirname(BACKEND_DIR)
-load_dotenv(os.path.join(BACKEND_DIR, ".env"))
-load_dotenv(os.path.join(REPO_DIR, ".env"))
-load_dotenv()
 
 # ── Gemini API setup (new google.genai SDK) ──────────────────
 try:
@@ -1373,7 +1374,7 @@ async def _evaluate_report_verification(row: ReportRecord) -> Dict[str, Any]:
             message = "No Ethereum transaction found yet"
 
         return {
-            "report_id": row.report_id,
+            "report_id": str(row.id),
             "status": status,
             "verified": False,
             "db_hash_matches": db_hash_matches,
@@ -1397,7 +1398,7 @@ async def _evaluate_report_verification(row: ReportRecord) -> Dict[str, Any]:
         status = "tampered"
 
     return {
-        "report_id": row.report_id,
+        "report_id": str(row.id),
         "status": status,
         "verified": verified,
         "db_hash_matches": db_hash_matches,
@@ -1523,7 +1524,7 @@ def _reconcile_anchor_state_from_chain(db: Session, report: ReportRecord) -> Rep
     except Exception as exc:
         logger.warning(
             "Anchor reconcile skipped. report_id=%s tx_hash=%s reason=%s",
-            report.report_id,
+            report.id,
             tx_hash,
             exc,
         )
@@ -1533,7 +1534,7 @@ def _reconcile_anchor_state_from_chain(db: Session, report: ReportRecord) -> Rep
     receipt_status = chain_state.get("receipt_status")
     logger.info(
         "Anchor reconcile inspected. report_id=%s tx_hash=%s state=%s receipt_status=%s",
-        report.report_id,
+        report.id,
         tx_hash,
         state,
         receipt_status,
@@ -1586,7 +1587,7 @@ def _reconcile_anchor_state_from_chain(db: Session, report: ReportRecord) -> Rep
         db.refresh(report)
         logger.info(
             "Anchor reconcile DB update. report_id=%s tx_hash=%s anchor_status=%s blockchain_proof=%s",
-            report.report_id,
+            report.id,
             tx_hash,
             report.anchor_status,
             report.blockchain_proof,
@@ -1658,8 +1659,8 @@ def _anchor_report_if_needed(db: Session, report: ReportRecord) -> ReportRecord:
         report.verified_at = None
         logger.info(
             "Anchor reused from duplicate. report_id=%s duplicate_report_id=%s tx_hash=%s",
-            report.report_id,
-            duplicate.report_id,
+            report.id,
+            str(duplicate.id),
             duplicate.blockchain_tx_hash,
         )
         db.commit()
@@ -1677,7 +1678,7 @@ def _anchor_report_if_needed(db: Session, report: ReportRecord) -> ReportRecord:
         return report
 
     try:
-        logger.info("Anchoring start. report_id=%s report_hash=%s", report.report_id, report_hash)
+        logger.info("Anchoring start. report_id=%s report_hash=%s", report.id, report_hash)
         tx_hash = store_precomputed_hash_on_chain(report_hash)
         report.blockchain_proof = True
         report.blockchain_tx_hash = tx_hash
@@ -1687,7 +1688,7 @@ def _anchor_report_if_needed(db: Session, report: ReportRecord) -> ReportRecord:
         report.verification_status = "pending"
         report.verification_error = None
         report.verified_at = None
-        logger.info("Anchoring receipt success. report_id=%s tx_hash=%s", report.report_id, tx_hash)
+        logger.info("Anchoring receipt success. report_id=%s tx_hash=%s", report.id, tx_hash)
     except DuplicateReportAnchoringError:
         # Hash already on-chain from a prior transaction — treat as anchored.
         report.blockchain_proof = True
@@ -1698,7 +1699,7 @@ def _anchor_report_if_needed(db: Session, report: ReportRecord) -> ReportRecord:
         report.verified_at = None
         logger.info(
             "Anchoring duplicate on-chain. report_id=%s report_hash=%s",
-            report.report_id,
+            report.id,
             report_hash,
         )
     except Exception as exc:
@@ -1712,7 +1713,7 @@ def _anchor_report_if_needed(db: Session, report: ReportRecord) -> ReportRecord:
         report.verified_at = None
         logger.error(
             "Anchoring failed. report_id=%s report_hash=%s error=%s",
-            report.report_id,
+            report.id,
             report_hash,
             exc,
         )
@@ -1733,7 +1734,7 @@ def _anchor_report_if_needed(db: Session, report: ReportRecord) -> ReportRecord:
 
     logger.info(
         "Anchoring DB update. report_id=%s tx_hash=%s anchor_status=%s blockchain_proof=%s",
-        report.report_id,
+        report.id,
         report.blockchain_tx_hash or report.tx_hash,
         report.anchor_status,
         report.blockchain_proof,
@@ -1784,17 +1785,16 @@ def _save_generated_report(
     anchor_status = "pending" if max(float(risk_score or 0.0), float(manipulation_risk or 0.0)) > DARK_PATTERN_THRESHOLD else "not_required"
 
     record = ReportRecord(
-        report_id=str(uuid.uuid4()),
         url=str(url or "").strip(),
         domain=domain,
         risk_score=risk_score_value,
-        detected_patterns=encode_detected_patterns(detected),
-        details=str(details or "").strip(),
+        detected_patterns=detected,
+        details=details,
         timestamp=now,
         blockchain_proof=False,
         blockchain_tx_hash=None,
         report_hash=report_hash,
-        canonical_payload=stable_payload_json,
+        canonical_payload=stable_payload,
         tx_hash=None,
         anchor_status=anchor_status,
         anchor_error=None,
@@ -1806,8 +1806,8 @@ def _save_generated_report(
         overall_risk=overall_risk_value,
         pattern_count=len(detected),
         tracker_count=tracker_count_value,
-        pattern_names_json=pattern_names_json,
-        combined_insight=str(details or "").strip(),
+        pattern_names_json=encode_pattern_names(detected),
+        combined_insight=details,
         created_at=now,
     )
 
@@ -1820,7 +1820,7 @@ def _save_generated_report(
 
 def _build_report_metadata(record: ReportRecord) -> Dict[str, Any]:
     return {
-        "report_id": record.report_id,
+        "report_id": str(record.id),
         "risk_score": float(record.risk_score or 0.0),
         "blockchain_proof": bool(record.blockchain_proof),
         "ethereum_tx_hash": record.blockchain_tx_hash,
@@ -1834,18 +1834,29 @@ def _format_utc_timestamp(value: Optional[datetime]) -> str:
 def _stored_report_to_response(record: ReportRecord) -> StoredReportResponse:
     timestamp = _format_utc_timestamp(record.timestamp or record.created_at)
     created_at = _format_utc_timestamp(record.created_at)
+    
+    details_val = record.details
+    if isinstance(details_val, dict):
+        details_val = json.dumps(details_val, default=str)
+    elif details_val is None:
+        details_val = record.combined_insight
+    
+    canonical_val = record.canonical_payload
+    if isinstance(canonical_val, dict):
+        canonical_val = json.dumps(canonical_val, default=str)
+    
     return StoredReportResponse(
-        report_id=record.report_id,
+        report_id=str(record.id),
         url=record.url,
         domain=record.domain,
         risk_score=float(record.risk_score or 0.0),
-        detected_patterns=decode_detected_patterns(record.detected_patterns or record.pattern_names_json),
-        details=record.details or record.combined_insight,
+        detected_patterns=record.detected_patterns or record.pattern_names_json,
+        details=details_val,
         timestamp=timestamp,
         blockchain_proof=bool(record.blockchain_proof),
         blockchain_tx_hash=record.blockchain_tx_hash or record.tx_hash,
         report_hash=record.report_hash,
-        canonical_payload_json=record.canonical_payload,
+        canonical_payload_json=canonical_val,
         tx_hash=record.tx_hash,
         anchor_status=record.anchor_status,
         anchor_error=record.anchor_error,
@@ -1856,7 +1867,7 @@ def _stored_report_to_response(record: ReportRecord) -> StoredReportResponse:
         overall_risk=record.overall_risk,
         pattern_count=record.pattern_count,
         tracker_count=record.tracker_count,
-        pattern_names=decode_pattern_names(record.pattern_names_json),
+        pattern_names=record.pattern_names_json or [],
         combined_insight=record.combined_insight,
         created_at=created_at,
     )
@@ -1876,7 +1887,7 @@ def _anchor_report_worker(report_id: str) -> None:
         _anchor_report_if_needed(db, report)
         logger.info(
             "Anchor worker done. report_id=%s anchor_status=%s tx_hash=%s",
-            report.report_id,
+            report.id,
             report.anchor_status,
             report.blockchain_tx_hash or report.tx_hash,
         )
@@ -2024,21 +2035,20 @@ async def save_report(
             duplicate.verified_at = None
             db.commit()
             db.refresh(duplicate)
-            background_tasks.add_task(_anchor_report_worker, duplicate.report_id)
+            background_tasks.add_task(_anchor_report_worker, str(duplicate.id))
         return _stored_report_to_response(duplicate)
 
     record = ReportRecord(
-        report_id=str(uuid.uuid4()),
         url=req.url,
         domain=resolved_domain,
         risk_score=overall_risk_value,
-        detected_patterns=encode_detected_patterns(normalized_patterns),
-        details=str(req.combined_insight or "").strip(),
+        detected_patterns=normalized_patterns,
+        details=req.combined_insight,
         timestamp=datetime.utcnow(),
         blockchain_proof=False,
         blockchain_tx_hash=None,
         report_hash=report_hash,
-        canonical_payload=canonical_json,
+        canonical_payload=canonical_payload,
         tx_hash=None,
         anchor_status=(
             "pending"
@@ -2068,7 +2078,7 @@ async def save_report(
     db.refresh(record)
 
     if req.anchor_on_save and _meets_anchor_threshold(record):
-        background_tasks.add_task(_anchor_report_worker, record.report_id)
+        background_tasks.add_task(_anchor_report_worker, str(record.id))
 
     return _stored_report_to_response(record)
 
@@ -2133,7 +2143,7 @@ def trigger_report_anchor(
 
     if row.anchor_status == "anchored" and (row.tx_hash or row.blockchain_tx_hash):
         return TriggerAnchorResponse(
-            report_id=row.report_id,
+            report_id=str(row.id),
             anchor_status=row.anchor_status,
             tx_hash=row.tx_hash or row.blockchain_tx_hash,
             detail="Report already anchored",
@@ -2143,9 +2153,9 @@ def trigger_report_anchor(
     row.anchor_error = None
     db.commit()
 
-    background_tasks.add_task(_anchor_report_worker, row.report_id)
+    background_tasks.add_task(_anchor_report_worker, str(row.id))
     return TriggerAnchorResponse(
-        report_id=row.report_id,
+        report_id=str(row.id),
         anchor_status=row.anchor_status,
         tx_hash=row.tx_hash,
         detail="Anchoring job queued",
@@ -2182,7 +2192,7 @@ def retry_failed_anchors(
         row.verification_status = "pending"
         row.verification_error = None
         row.verified_at = None
-        queued_ids.append(row.report_id)
+        queued_ids.append(str(row.id))
 
     db.commit()
 
@@ -2238,7 +2248,7 @@ def wall_of_shame(limit: Optional[int] = None, db: Session = Depends(get_db)):
             WallOfShameItem(
                 url=row.url,
                 risk_score=float(row.risk_score or 0.0),
-                detected_patterns=decode_detected_patterns(row.detected_patterns or row.pattern_names_json),
+                detected_patterns=row.detected_patterns or row.pattern_names_json,
                 timestamp=ts.isoformat() + "Z" if ts else "",
                 blockchain_proof=bool(row.blockchain_proof),
                 blockchain_tx_hash=row.blockchain_tx_hash or row.tx_hash,
