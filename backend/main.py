@@ -43,6 +43,7 @@ from regulatory_database import (
 )
 from database import (
     ReportRecord,
+    engine,
     SessionLocal,
     init_db,
     get_db,
@@ -120,6 +121,13 @@ DARK_PATTERN_THRESHOLD = 7.0
 logger = logging.getLogger("consumershield.anchor")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _configured_contract_address() -> Optional[str]:
     for env_name in ("CONTRACT_ADDRESS", "EVIDENCE_REGISTRY_CONTRACT_ADDRESS"):
         value = os.getenv(env_name)
@@ -156,50 +164,104 @@ except Exception as e:
 
 # ── Local BERT model for dark pattern classification ──────────
 LOCAL_NLP_AVAILABLE = False
+BERT_MODEL_NAME: Optional[str] = None
 BERT_ID_TO_LABEL: Dict[int, str] = {}
 BERT_LABEL_TO_ID: Dict[str, int] = {}
-try:
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline as hf_pipeline
-    from peft import PeftModel
+if _env_flag("ENABLE_LOCAL_NLP", False):
+    try:
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline as hf_pipeline
+        from peft import PeftModel
 
-    print("[ConsumerShield] Loading local dark-pattern model...")
-    model_dir = os.path.join(REPO_DIR, "consumershield-roberta-final")
+        print("[ConsumerShield] Loading local dark-pattern model...")
+        model_dir = os.path.join(REPO_DIR, "consumershield-roberta-final")
 
-    # Prefer adapter metadata so base model always matches training/export config.
-    adapter_config_path = os.path.join(model_dir, "adapter_config.json")
-    base_model_name = "roberta-base"
-    if os.path.isfile(adapter_config_path):
-        with open(adapter_config_path, "r", encoding="utf-8") as f:
-            adapter_cfg = json.load(f)
-        base_model_name = str(adapter_cfg.get("base_model_name_or_path") or base_model_name)
+        # Prefer adapter metadata so base model always matches training/export config.
+        adapter_config_path = os.path.join(model_dir, "adapter_config.json")
+        base_model_name = "roberta-base"
+        if os.path.isfile(adapter_config_path):
+            with open(adapter_config_path, "r", encoding="utf-8") as f:
+                adapter_cfg = json.load(f)
+            base_model_name = str(adapter_cfg.get("base_model_name_or_path") or base_model_name)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+        BERT_MODEL_NAME = base_model_name
 
-    base_model = AutoModelForSequenceClassification.from_pretrained(
-        base_model_name,
-        num_labels=7,
-    )
-    model = PeftModel.from_pretrained(base_model, model_dir)
+        tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
-    label_map_path = os.path.join(model_dir, "label_map.json")
-    if os.path.isfile(label_map_path):
-        with open(label_map_path, "r", encoding="utf-8") as f:
-            label_map = json.load(f)
-        BERT_ID_TO_LABEL = {int(v): str(k) for k, v in label_map.items()}
-        BERT_LABEL_TO_ID = {label: idx for idx, label in BERT_ID_TO_LABEL.items()}
-        model.config.id2label = BERT_ID_TO_LABEL
-        model.config.label2id = BERT_LABEL_TO_ID
+        base_model = AutoModelForSequenceClassification.from_pretrained(
+            base_model_name,
+            num_labels=7,
+        )
+        model = PeftModel.from_pretrained(base_model, model_dir)
 
-    nlp_classifier = hf_pipeline(
-        "text-classification",
-        model=model,
-        tokenizer=tokenizer,
-        truncation=True,
-    )
-    LOCAL_NLP_AVAILABLE = True
-    print(f"[ConsumerShield] Local dark-pattern model loaded successfully! base={base_model_name}")
-except Exception as e:
-    print(f"[ConsumerShield] Failed to load local model: {e}")
+        label_map_path = os.path.join(model_dir, "label_map.json")
+        if os.path.isfile(label_map_path):
+            with open(label_map_path, "r", encoding="utf-8") as f:
+                label_map = json.load(f)
+            BERT_ID_TO_LABEL = {int(v): str(k) for k, v in label_map.items()}
+            BERT_LABEL_TO_ID = {label: idx for idx, label in BERT_ID_TO_LABEL.items()}
+            model.config.id2label = BERT_ID_TO_LABEL
+            model.config.label2id = BERT_LABEL_TO_ID
+
+        nlp_classifier = hf_pipeline(
+            "text-classification",
+            model=model,
+            tokenizer=tokenizer,
+            truncation=True,
+        )
+        LOCAL_NLP_AVAILABLE = True
+        print(f"[ConsumerShield] Local dark-pattern model loaded successfully! base={base_model_name}")
+    except Exception as e:
+        print(f"[ConsumerShield] Failed to load local model: {e}")
+else:
+    print("[ConsumerShield] Local dark-pattern model disabled by ENABLE_LOCAL_NLP=0")
+
+# ── Qwen2.5-VL-7B vision model for 4-tier architecture ───────────────────
+# VRAM Budget:
+#   - RoBERTa-base LoRA: ~500MB
+#   - Qwen2.5-VL-7B 4-bit: ~4.5GB
+#   - OS + overhead: ~1.5GB
+#   - Total: ~6.5GB (fits in RTX 5060's 8GB)
+
+QWEN_VL_AVAILABLE = False
+QWEN_MODEL_NAME: Optional[str] = None
+qwen_model = None
+qwen_processor = None
+QWEN_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
+
+if _env_flag("ENABLE_QWEN_VL", False):
+    try:
+        import torch
+        from transformers import AutoProcessor, AutoModel
+        from bitsandbytes.nn import Linear4bit
+        from transformers import BitsAndBytesConfig
+
+        print("[ConsumerShield] Loading Qwen2.5-VL-7B 4-bit quantized vision model...")
+        
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            device_map="auto",
+        )
+        
+        qwen_processor = AutoProcessor.from_pretrained(QWEN_MODEL_ID)
+        qwen_model = AutoModel.from_pretrained(
+            QWEN_MODEL_ID,
+            device_map="auto",
+            quantization_config=quantization_config,
+            trust_remote_code=True,
+        )
+        QWEN_MODEL_NAME = QWEN_MODEL_ID
+        QWEN_VL_AVAILABLE = True
+        print(f"[ConsumerShield] Qwen2.5-VL-7B loaded successfully (4-bit quantized)")
+    except Exception as e:
+        QWEN_VL_AVAILABLE = False
+        qwen_model = None
+        qwen_processor = None
+        print(f"[ConsumerShield] Failed to load Qwen2.5-VL-7B: {e}. Degrading to Gemini + rule-based.")
+else:
+    print("[ConsumerShield] Qwen2.5-VL-7B disabled by ENABLE_QWEN_VL=0")
 
 # ── Severity order for pattern classification ─────────────────
 SEVERITY_ORDER = {"high": 3, "medium": 2, "low": 1}
@@ -553,6 +615,7 @@ class CompleteRequest(BaseModel):
     privacy_data: PrivacyData
     manipulation_data: ManipulationData
     screenshot_data_url: Optional[str] = None
+    screenshot: Optional[str] = None  # base64 encoded PNG (alternative to screenshot_data_url)
     dom_text: Optional[str] = None
     aria_text: Optional[str] = None
 
@@ -1061,21 +1124,141 @@ def _normalize_tier3_patterns_from_json(parsed: Dict[str, Any]) -> List[Dict[str
 
     return tier3
  
+async def analyze_with_qwen(screenshot_base64: str, text: str) -> Optional[Dict[str, Any]]:
+    """
+    Tier 2a: Qwen2.5-VL-7B vision analysis.
+    Analyzes screenshot + text to classify dark patterns.
+    
+    Returns:
+        {
+            "label": str (one of: Forced Action, Misdirection, Obstruction, Scarcity, 
+                         Sneaking, Social Proof, Urgency, No Dark Pattern),
+            "confidence": float (0.0-1.0),
+            "reason": str (explanation)
+        }
+        or None if analysis fails.
+    """
+    if not QWEN_VL_AVAILABLE or qwen_model is None or qwen_processor is None:
+        return None
+    
+    try:
+        import torch
+        from PIL import Image
+        from io import BytesIO
+        
+        # Decode base64 screenshot to PIL Image
+        image_data = base64.b64decode(screenshot_base64)
+        image = Image.open(BytesIO(image_data)).convert("RGB")
+        
+        # Prepare system and user prompts
+        system_prompt = (
+            "You are a Dark Pattern Analyzer. Analyze screenshots and text to identify dark patterns "
+            "according to CCPA and DPDP Act guidelines. Classify into exactly these 8 categories:\n"
+            "- Forced Action: User must do something unwanted\n"
+            "- Misdirection: UI directs users toward unintended choices\n"
+            "- Obstruction: Making opt-out harder than opt-in\n"
+            "- Scarcity: Artificial urgency via limited stock/time\n"
+            "- Sneaking: Hidden charges/subscriptions added without consent\n"
+            "- Social Proof: Fake testimonials/reviews to influence decisions\n"
+            "- Urgency: Time pressure to rush decisions\n"
+            "- No Dark Pattern: None of the above detected\n"
+            "Respond ONLY with valid JSON: {\"label\": \"<class>\", \"confidence\": <0.0-1.0>, \"reason\": \"<brief explanation>\"}"
+        )
+        
+        user_prompt = f"Analyze this screenshot and text for dark patterns.\n\nText content:\n{text}"
+        
+        # Process inputs with Qwen processor
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": user_prompt}
+                ]
+            }
+        ]
+        
+        # Prepare inputs
+        text_input = qwen_processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        image_inputs, video_inputs = qwen_processor.process_vision_info(messages)
+        inputs = qwen_processor(
+            text=[text_input],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        
+        # Run inference with torch.no_grad()
+        with torch.no_grad():
+            outputs = qwen_model.generate(
+                **inputs,
+                max_new_tokens=200,
+                temperature=0.7,
+            )
+        
+        # Decode response
+        response_text = qwen_processor.batch_decode(
+            outputs,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True,
+        )[0]
+        
+        # Extract JSON from response (handle markdown code blocks if present)
+        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        if not json_match:
+            logger.warning(f"[ConsumerShield] Qwen response did not contain JSON: {response_text[:100]}")
+            return None
+        
+        json_str = json_match.group()
+        result = json.loads(json_str)
+        
+        # Validate and normalize result
+        label = str(result.get("label", "Unknown")).strip()
+        confidence = float(result.get("confidence", 0.0))
+        confidence = max(0.0, min(1.0, confidence))  # Clamp to [0, 1]
+        reason = str(result.get("reason", "")).strip()
+        
+        logger.info(f"[ConsumerShield] Qwen2.5-VL analysis: {label} ({confidence:.2%})")
+        
+        return {
+            "label": label,
+            "confidence": round(confidence, 2),
+            "reason": reason,
+        }
+        
+    except Exception as e:
+        logger.error(f"[ConsumerShield] Qwen2.5-VL analysis failed: {e}")
+        return None
+
+ 
 async def make_ai_insight(
     url: str,
     privacy: PrivacyData,
     manipulation: ManipulationData,
     screenshot_data_url: Optional[str] = None,
+    screenshot: Optional[str] = None,
     dom_text: Optional[str] = None,
     aria_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Run Gemini and BERT models simultaneously using asyncio.gather.
-    Returns a dict with:
-      - gemini_insight: str or None
-      - bert_classification: dict with 'label' and 'confidence' or None
-      - timestamp: ISO timestamp
-      - combined_summary: human-readable summary
+    4-tier dark pattern analysis architecture:
+    - Tier 1: RoBERTa-base LoRA (text classification, always runs)
+    - Tier 2a: Qwen2.5-VL-7B (vision analysis, if screenshot provided)
+    - Tier 2b: Gemini API (text forensic analysis, if Tier 2a unavailable/low confidence)
+    - Tier 3: Rule-based deterministic fallback
+    
+    Confidence thresholds:
+    - RoBERTa >= 0.85 → return immediately
+    - Qwen >= 0.80 → skip Gemini
+    - Gemini >= 0.75 → skip rule-based
+    - Below all → use rule-based fallback
+    
+    Returns a dict with tier information and combined analysis results.
     """
     
     async def get_gemini_insight():
@@ -1303,35 +1486,112 @@ async def make_ai_insight(
             print(f"[ConsumerShield] BERT error: {e}")
             return None
 
-    # Run both models simultaneously
-    gemini_result, bert_classification = await asyncio.gather(
+    # Prepare screenshot for Qwen if available
+    screenshot_base64 = screenshot or screenshot_data_url
+    if screenshot_base64 and screenshot_base64.startswith("data:image"):
+        # Extract base64 from data URL
+        try:
+            screenshot_base64 = screenshot_base64.split(",", 1)[1]
+        except IndexError:
+            screenshot_base64 = None
+
+    # Prepare text context for Qwen
+    qwen_text_context = ""
+    if dom_text:
+        qwen_text_context += f"DOM: {dom_text[:500]}\n"
+    if aria_text:
+        qwen_text_context += f"ARIA: {aria_text[:500]}"
+
+    # Run all models in parallel
+    gemini_result, bert_classification, qwen_result = await asyncio.gather(
         get_gemini_insight(),
         get_bert_classification(),
+        analyze_with_qwen(screenshot_base64, qwen_text_context) if screenshot_base64 and QWEN_VL_AVAILABLE else asyncio.sleep(0, result=None),
         return_exceptions=False
     )
 
-    # Unpack Gemini dict result
-    gemini_insight: Optional[str] = gemini_result.get("text")
-    tier3_patterns: list = gemini_result.get("tier3_patterns", [])
-    gemini_status: Optional[str] = gemini_result.get("error")
-    forensic_json: Optional[Dict[str, Any]] = gemini_result.get("forensic_json")
+    # ===== 4-TIER DECISION LOGIC =====
+    # Initialize tracking
+    selected_tier = None
+    final_classification = None
+    final_confidence = 0.0
+    tier_note = ""
+
+    # TIER 1: RoBERTa-base LoRA (text classification)
+    if bert_classification and isinstance(bert_classification, list) and len(bert_classification) > 0:
+        # Get the highest confidence BERT result
+        bert_results_with_scores = [(r, r.get("confidence", 0)) for r in bert_classification]
+        top_bert = max(bert_results_with_scores, key=lambda x: x[1])
+        top_bert_result = top_bert[0]
+        bert_confidence = top_bert_result.get("confidence", 0) / 100.0  # Convert from percentage to 0-1
+        
+        if bert_confidence >= 0.85:
+            selected_tier = "Tier 1 (RoBERTa)"
+            final_classification = top_bert_result
+            final_confidence = bert_confidence
+            tier_note = f"Tier 1 high confidence: {top_bert_result.get('label')} ({bert_confidence:.1%})"
+            logger.info(f"[ConsumerShield] {tier_note}")
+        
+        # TIER 2a: Qwen2.5-VL-7B (vision analysis) - if Tier 1 insufficient and screenshot available
+        if selected_tier is None and qwen_result and isinstance(qwen_result, dict):
+            qwen_confidence = qwen_result.get("confidence", 0)
+            if qwen_confidence >= 0.80:
+                selected_tier = "Tier 2a (Qwen)"
+                final_classification = qwen_result
+                final_confidence = qwen_confidence
+                tier_note = f"Tier 2a vision match: {qwen_result.get('label')} ({qwen_confidence:.1%})"
+                logger.info(f"[ConsumerShield] {tier_note}")
+    
+    # TIER 2b: Gemini API (forensic text analysis) - if previous tiers insufficient
+    if selected_tier is None and gemini_result:
+        gemini_insight = gemini_result.get("text")
+        tier3_patterns = gemini_result.get("tier3_patterns", [])
+        
+        if tier3_patterns:
+            # Extract highest confidence pattern from Gemini
+            gemini_patterns_with_conf = [(p, p.get("confidence", 0.5)) for p in tier3_patterns]
+            top_gemini = max(gemini_patterns_with_conf, key=lambda x: x[1])
+            top_pattern = top_gemini[0]
+            gemini_confidence = top_pattern.get("confidence", 0.5)
+            
+            if gemini_confidence >= 0.75:
+                selected_tier = "Tier 2b (Gemini)"
+                final_classification = {
+                    "label": top_pattern.get("pattern_name", "Unknown"),
+                    "confidence": gemini_confidence,
+                    "reason": top_pattern.get("evidence_text", ""),
+                    "tier": "Gemini"
+                }
+                final_confidence = gemini_confidence
+                tier_note = f"Tier 2b forensic match: {top_pattern.get('pattern_name')} ({gemini_confidence:.1%})"
+                logger.info(f"[ConsumerShield] {tier_note}")
+
+    # TIER 3: Rule-based deterministic fallback
+    if selected_tier is None:
+        tier3_patterns = make_tier3_rule_fallback(manipulation)
+        selected_tier = "Tier 3 (Rule-based)"
+        tier_note = "Tier 3 rule-based fallback"
+        logger.info(f"[ConsumerShield] {tier_note}")
+
+    # Unpack Gemini results for backward compatibility
+    gemini_insight = gemini_result.get("text") if gemini_result else None
+    tier3_patterns = gemini_result.get("tier3_patterns", []) if gemini_result else []
+    gemini_status = gemini_result.get("error") if gemini_result else None
+    forensic_json = gemini_result.get("forensic_json") if gemini_result else None
 
     if not tier3_patterns:
         tier3_patterns = make_tier3_rule_fallback(manipulation)
 
-    # Build user-facing summary.
-    # Prefer Gemini risk_summary, fall back to rule-based when Gemini is unavailable.
+    # Build user-facing summary
     p_risk = calc_privacy_risk(privacy)
     m_risk = calc_manipulation_risk(manipulation)
     fallback_summary = make_rule_insight(url, privacy, manipulation, p_risk, m_risk)
 
     bert_note = None
     if bert_classification and isinstance(bert_classification, list):
-        # Handle array of per-pattern results with new multi-class model
         total = len(bert_classification)
         avg_confidence = sum(r.get("confidence", 0) for r in bert_classification) / total if total > 0 else 0
         
-        # Get unique pattern types detected by BERT
         detected_types = [r.get("label", "unknown") for r in bert_classification]
         unique_types = list(set(detected_types))
         
@@ -1357,6 +1617,10 @@ async def make_ai_insight(
         "bert_classification": bert_classification,
         "tier3_patterns": tier3_patterns,
         "forensic_json": forensic_json,
+        "selected_tier": selected_tier,
+        "final_classification": final_classification,
+        "final_confidence": final_confidence,
+        "tier_note": tier_note,
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "combined_summary": combined_summary
     }
@@ -1951,15 +2215,27 @@ def _anchor_report_worker(report_id: str) -> None:
 
 @app.get("/health")
 def health():
+    db_status = "ok"
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SELECT 1")
+    except Exception as exc:
+        db_status = f"error: {exc.__class__.__name__}"
+
     remaining_cooldown = max(0, int(math.ceil(_GEMINI_GLOBAL_COOLDOWN_UNTIL - time.time())))
     return {
         "status": "ok",
         "version": "1.0.0",
+        "database_status": db_status,
+        "roberta_enabled": LOCAL_NLP_AVAILABLE,
+        "roberta_model": BERT_MODEL_NAME,
+        "qwen_enabled": QWEN_VL_AVAILABLE,
+        "qwen_model": QWEN_MODEL_NAME,
         "gemini_enabled": GEMINI_AVAILABLE,
         "gemini_model": GEMINI_MODEL_NAME,
         "gemini_models_to_try": _GEMINI_MODEL_CANDIDATES,
         "gemini_quota_cooldown_sec": remaining_cooldown,
-        "ai_powered": GEMINI_AVAILABLE
+        "ai_powered": LOCAL_NLP_AVAILABLE or QWEN_VL_AVAILABLE or GEMINI_AVAILABLE
     }
 
 
@@ -1982,6 +2258,7 @@ async def analyze_complete(req: CompleteRequest, db: Session = Depends(get_db)):
         req.privacy_data,
         req.manipulation_data,
         screenshot_data_url=req.screenshot_data_url,
+        screenshot=req.screenshot,
         dom_text=req.dom_text,
         aria_text=req.aria_text,
     )
