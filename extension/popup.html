@@ -142,10 +142,19 @@
 
   <!-- ╔══ MANIPULATION TAB ═══════════════════════════════════╗ -->
   <div class="tab-content" id="tab-content-manipulation">
+    <div class="debug-controls" id="debug-controls">
+      <label class="debug-toggle" for="toggle-debug-mode" title="Show filtered patterns for testing">
+        <input type="checkbox" id="toggle-debug-mode">
+        <span>Debug Mode: show filtered patterns</span>
+      </label>
+    </div>
+
     <div class="section-header">⚠️ Dark Patterns Found</div>
     <div id="pattern-list" class="item-list">
       <div class="empty-state">Scanning…</div>
     </div>
+
+    <div id="debug-filtered-list" class="item-list" style="display:none;"></div>
 
     <div class="section-header">⚖️ Legal Exposure</div>
     <div id="manipulation-legal-list" class="item-list legal-list">

@@ -96,6 +96,132 @@ function mergeStoredAnalysis(domain, patch) {
   });
 }
 
+const MANIPULATION_CONFIDENCE_FLOOR = 0.6;
+const DEBUG_FILTERED_PATTERNS_PREFIX = 'consumershield_debug_filtered_patterns:';
+
+function getFilteredPatternDebugKey(domain) {
+  return `${DEBUG_FILTERED_PATTERNS_PREFIX}${domain}`;
+}
+
+function extractPatternText(pattern) {
+  return String(
+    pattern?.text
+      || pattern?.snippet
+      || pattern?.description
+      || pattern?.name
+      || ''
+  ).toLowerCase();
+}
+
+function isTaxonomyReferencePattern(pattern, url = '') {
+  const combined = `${extractPatternText(pattern)} ${String(pattern?.description || '').toLowerCase()}`;
+  const urlText = String(url || '').toLowerCase();
+  const hasTaxonomyDescription = /taxonomy\/reference content|hall\s*of\s*shame|deceptive\s*pattern|dark\s*pattern\s*type/.test(combined);
+  const hasTaxonomyUrlCue = /\/types\b|dark-pattern|deceptive-pattern|hall[-_]?of[-_]?shame|taxonomy/.test(urlText);
+  return hasTaxonomyDescription || hasTaxonomyUrlCue;
+}
+
+function buildPatternFilterReason(pattern, url = '') {
+  const type = String(pattern?.type || '').toLowerCase();
+  const text = extractPatternText(pattern);
+  const nameText = String(pattern?.name || '').toLowerCase();
+  const confidence = Number(pattern?.confidence || 0);
+
+  const benignDiscoverySection = /\b(top\s*stories|related\s*stories|latest\s*news|news\s*updates|headlines|editorial|recommended\s*reads|suggested\s*reads|from\s*around\s*the\s*web|popular\s*articles?|trending\s*stories|discover\s*more|explore\s*more|shop\s*by\s*category|buying\s*guides?)\b/.test(text);
+
+  if (confidence < MANIPULATION_CONFIDENCE_FLOOR) {
+    return `below confidence floor (${confidence.toFixed(2)} < ${MANIPULATION_CONFIDENCE_FLOOR.toFixed(2)})`;
+  }
+
+  if (isTaxonomyReferencePattern(pattern, url)) {
+    return 'taxonomy or educational dark-pattern reference page';
+  }
+
+  if (type === 'urgency') {
+    if (/sticky\s*banner/.test(text) && !/\bonly\s+\d+\s+(left|remaining)|\bhurry\b|\blast\s*chance\b|\boffer\s*expires?\b|\bcountdown\b/.test(text)) {
+      return 'generic sticky UI banner without concrete urgency evidence';
+    }
+
+    if (benignDiscoverySection) {
+      return 'benign discovery/editorial section (not purchase-pressure UX)';
+    }
+
+    if (/\bsale\b|\bpromotion\b|deal\s*of\s*the\s*day|\bdiscount\b/.test(text)) {
+      return 'benign urgency marketing language';
+    }
+  }
+
+  if (type === 'preselected') {
+    if (/gift\s*wrap|priority\s*delivery|insurance/.test(text)) {
+      return 'legitimate preselected checkout add-on';
+    }
+  }
+
+  if (type === 'nagging') {
+    if (/cookie|consent|age\s*verification|terms|privacy\s*policy/.test(text)) {
+      return 'likely legal or compliance popup';
+    }
+  }
+
+  if (type === 'obstruction') {
+    if (/faq|consumer\s*policy|returns?|terms\s*of\s*use|privacy\s*policy|shipping\s*policy|cancellation\s*&\s*returns?/.test(text)) {
+      return 'policy/help text reference without actionable cancellation obstruction evidence';
+    }
+  }
+
+  if (type === 'misdirection') {
+    if (benignDiscoverySection) {
+      return 'benign discovery/editorial section (not manipulative redirection)';
+    }
+
+    if (/price\s*anchoring|tiered\s*pricing/.test(text) || /price\s*anchoring|tiered\s*pricing/.test(nameText)) {
+      return 'standard tiered pricing / price anchoring presentation';
+    }
+  }
+
+  if (type === 'nagging') {
+    if (benignDiscoverySection) {
+      return 'benign discovery/editorial widget (not repeated coercive prompting)';
+    }
+  }
+
+  return null;
+}
+
+function applyPhaseOnePatternFilters(patterns, url = '') {
+  const visiblePatterns = [];
+  const filteredPatterns = [];
+
+  (Array.isArray(patterns) ? patterns : []).forEach((pattern) => {
+    const reason = buildPatternFilterReason(pattern, url);
+    if (reason) {
+      filteredPatterns.push({
+        ...pattern,
+        filtered_reason: reason,
+        filtered_at: Date.now(),
+      });
+      return;
+    }
+    visiblePatterns.push(pattern);
+  });
+
+  return { visiblePatterns, filteredPatterns };
+}
+
+function persistFilteredPatternsDebug(domain, url, filteredPatterns) {
+  const debugKey = getFilteredPatternDebugKey(domain);
+  const payload = {
+    domain,
+    url,
+    updated_at: Date.now(),
+    filtered_patterns: Array.isArray(filteredPatterns) ? filteredPatterns : [],
+  };
+
+  chrome.storage.local.set({
+    [debugKey]: payload,
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Backend relay (optional — gracefully skips if not available)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -547,6 +673,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     function finishAnalysis(trackers) {
       // Replace raw domains with resolved trackers
       data.privacy.trackers = trackers;
+
+      const phaseOneFilter = applyPhaseOnePatternFilters(data?.manipulation?.patterns || [], data?.url || '');
+      data.manipulation.patterns = phaseOneFilter.visiblePatterns;
+      persistFilteredPatternsDebug(domain, data.url, phaseOneFilter.filteredPatterns);
       
       const privacyRisk = calculatePrivacyRisk(data.privacy);
       const manipulationRisk = calculateManipulationRisk(data.manipulation);

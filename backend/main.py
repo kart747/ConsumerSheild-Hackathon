@@ -602,6 +602,7 @@ class PatternItem(BaseModel):
     name: str
     severity: str       # low | medium | high
     confidence: float = 1.0
+    urgency_type: Optional[str] = None
     law: Optional[str] = None
     penalty: Optional[str] = None
     description: Optional[str] = None
@@ -770,6 +771,42 @@ def get_risk_level(score: float) -> str:
     if score >= 4.0: return "MEDIUM"
     if score >= 2.0: return "LOW"
     return "SAFE"
+
+
+def classify_urgency_subtype(text: Optional[str]) -> Dict[str, Any]:
+    content = str(text or "").strip()
+    lowered = content.lower()
+
+    if not content:
+        return {
+            "urgency_type": "vague",
+            "authenticity": "uncertain",
+            "severity_adjustment": "MEDIUM",
+            "reason": "No urgency sample text was provided.",
+        }
+
+    if re.search(r"\b(ends?|until)\b.{0,30}\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|today|tonight|tomorrow|\d{1,2}:\d{2})\b", lowered):
+        return {
+            "urgency_type": "specific_date",
+            "authenticity": "likely_real",
+            "severity_adjustment": "MEDIUM",
+            "reason": "Contains a specific date/time marker that is potentially verifiable.",
+        }
+
+    if re.search(r"\bonly\s+\d+\s+(left|remaining|in stock|available)\b", lowered):
+        return {
+            "urgency_type": "numeric_unverifiable",
+            "authenticity": "uncertain",
+            "severity_adjustment": "LOW",
+            "reason": "Numeric scarcity claim detected without independent inventory verification.",
+        }
+
+    return {
+        "urgency_type": "vague",
+        "authenticity": "fake",
+        "severity_adjustment": "HIGH",
+        "reason": "Generic pressure-style urgency language without verifiable proof.",
+    }
 
 # ── Insight Generators ────────────────────────────────────────
 
@@ -2241,6 +2278,17 @@ def health():
 
 @app.post("/analyze-complete", response_model=CompleteResponse)
 async def analyze_complete(req: CompleteRequest, db: Session = Depends(get_db)):
+    urgency_messages: List[Dict[str, Any]] = []
+    for pattern in req.manipulation_data.patterns:
+        if str(pattern.type or "").strip().lower() != "urgency":
+            continue
+        urgency_assessment = classify_urgency_subtype(pattern.text or pattern.description or pattern.name)
+        pattern.urgency_type = urgency_assessment["urgency_type"]
+        urgency_messages.append({
+            "text": pattern.text or pattern.description or pattern.name,
+            **urgency_assessment,
+        })
+
     p_risk = calc_privacy_risk(req.privacy_data)
     m_risk = calc_manipulation_risk(req.manipulation_data)
     # Keep backend consistent with extension-side risk evaluation:
@@ -2287,6 +2335,8 @@ async def analyze_complete(req: CompleteRequest, db: Session = Depends(get_db)):
     )
 
     combined["report_metadata"] = _build_report_metadata(stored_report)
+    if urgency_messages:
+        combined["urgency_assessment"] = urgency_messages
 
     return CompleteResponse(
         url=req.url,

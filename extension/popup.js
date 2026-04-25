@@ -36,19 +36,90 @@ const BACKEND_DEFAULT_URLS = [
   'http://127.0.0.1:8000',
   'http://localhost:8000',
 ];
+const MANIPULATION_CONFIDENCE_FLOOR = 0.6;
+const DEBUG_MODE_KEY = 'consumershield_debug_mode';
+const DEBUG_FILTERED_PATTERNS_PREFIX = 'consumershield_debug_filtered_patterns:';
 let popupRefreshAttempted = false;
 let extensionEnabled = true;
 let activeRenderRequestId = 0;
+let debugModeEnabled = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
   chrome.tabs.onActivated.addListener(() => {
     popupRefreshAttempted = false;
   });
   await initializeProtectionToggle();
+  await initializeDebugToggle();
   setupTabs();
   setupActions();
   await loadAndRender();
 });
+
+function getDebugPatternStorageKey(domain) {
+  return `${DEBUG_FILTERED_PATTERNS_PREFIX}${domain}`;
+}
+
+function withConfidenceFloor(patterns) {
+  return (Array.isArray(patterns) ? patterns : []).filter((pattern) => {
+    const confidence = Number(pattern?.confidence ?? 0);
+    return confidence >= MANIPULATION_CONFIDENCE_FLOOR;
+  });
+}
+
+async function initializeDebugToggle() {
+  const toggle = document.getElementById('toggle-debug-mode');
+  if (!(toggle instanceof HTMLInputElement)) return;
+
+  const data = await new Promise((resolve) => {
+    chrome.storage.local.get([DEBUG_MODE_KEY], resolve);
+  });
+
+  debugModeEnabled = Boolean(data?.[DEBUG_MODE_KEY]);
+  toggle.checked = debugModeEnabled;
+
+  toggle.addEventListener('change', async (event) => {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLInputElement)) return;
+    debugModeEnabled = Boolean(target.checked);
+    chrome.storage.local.set({ [DEBUG_MODE_KEY]: debugModeEnabled });
+    await loadAndRender();
+  });
+}
+
+function renderFilteredPatternDebug(domain) {
+  const debugContainer = document.getElementById('debug-filtered-list');
+  if (!debugContainer) return;
+
+  if (!debugModeEnabled || !domain) {
+    debugContainer.style.display = 'none';
+    debugContainer.innerHTML = '';
+    return;
+  }
+
+  const debugKey = getDebugPatternStorageKey(domain);
+  chrome.storage.local.get([debugKey], (result) => {
+    const payload = result?.[debugKey] || {};
+    const filtered = Array.isArray(payload?.filtered_patterns) ? payload.filtered_patterns : [];
+
+    if (filtered.length === 0) {
+      debugContainer.style.display = 'block';
+      debugContainer.innerHTML = '<div class="debug-filtered-title">Filtered by precision rules</div><div class="empty-state">No filtered patterns for this page.</div>';
+      return;
+    }
+
+    debugContainer.style.display = 'block';
+    debugContainer.innerHTML = `
+      <div class="debug-filtered-title">Filtered by precision rules (${filtered.length})</div>
+      ${filtered.slice(0, 20).map((item) => `
+        <div class="debug-filtered-card">
+          <div class="debug-filtered-name">${escHtml(item?.name || item?.type || 'Pattern')}</div>
+          <div class="debug-filtered-reason">Reason: ${escHtml(item?.filtered_reason || 'filtered')}</div>
+          ${item?.text ? `<div class="debug-filtered-snippet">${escHtml(String(item.text).slice(0, 120))}</div>` : ''}
+        </div>
+      `).join('')}
+    `;
+  });
+}
 
 function normalizeComplaintIssueName(value) {
   const raw = String(value || '').trim();
@@ -519,7 +590,7 @@ async function loadAndRender() {
       displayAIInsight(
         tab,
         analysis.privacy?.trackers || [],
-        analysis.manipulation?.patterns || []
+        withConfidenceFloor(analysis.manipulation?.patterns || [])
       );
       return;
     }
@@ -638,7 +709,7 @@ function renderOverview(analysis) {
   const domainAnalysis = analysis.domain_analysis || {};
   const networkActivity = analysis.network_activity || {};
   const manipulation = analysis.manipulation || {};
-  const patterns = manipulation.patterns || [];
+  const patterns = withConfidenceFloor(manipulation.patterns || []);
   const privacyScore = getDisplayPrivacyScore(analysis);
   const privacyLevel = getRiskLevelFromScore(privacyScore);
   const manipulationScore = Number(manipulation.riskScore || 0);
@@ -1164,7 +1235,7 @@ function renderManipulationTab(analysis) {
   const manipulationScore = Number(manipulation.riskScore || 0);
   const patternList = document.getElementById('pattern-list');
   if (patternList) {
-    const patterns = manipulation.patterns || [];
+    const patterns = withConfidenceFloor(manipulation.patterns || []);
     if (patterns.length === 0) {
       patternList.innerHTML = `
         ${renderHorizontalGauge('Manipulation Risk Gauge', manipulationScore)}
@@ -1223,9 +1294,14 @@ function renderManipulationTab(analysis) {
     animateContainerItems(patternList);
   }
 
+  renderFilteredPatternDebug(analysis.domain || '');
+
   const manipulationLegalList = document.getElementById('manipulation-legal-list');
   if (manipulationLegalList) {
-    const legalItems = buildManipulationLegalItems(manipulation);
+    const legalItems = buildManipulationLegalItems({
+      ...manipulation,
+      patterns: withConfidenceFloor(manipulation.patterns || []),
+    });
     if (legalItems.length === 0) {
       manipulationLegalList.innerHTML = '<div class="empty-state">No violations mapped</div>';
     } else {
@@ -1258,7 +1334,7 @@ function buildManipulationLegalItems(manipulation) {
 
   const seen = new Set();
   const items = [];
-  (manipulation.patterns || []).forEach((pattern) => {
+  withConfidenceFloor(manipulation.patterns || []).forEach((pattern) => {
     const mapped = legalMap[pattern.type];
     if (mapped && !seen.has(pattern.type)) {
       seen.add(pattern.type);
@@ -1287,7 +1363,7 @@ function buildReportHTML(analysis) {
   const ringRadius = 86;
   const ringCircumference = 2 * Math.PI * ringRadius;
   const ringOffset = ringCircumference - (Math.max(0, Math.min(10, overallScore)) / 10) * ringCircumference;
-  const patternCount = (manipulation.patterns || []).length;
+  const patternCount = withConfidenceFloor(manipulation.patterns || []).length;
   const resolvedTrackers = (domainAnalysis.resolved_trackers || []).length > 0
     ? (domainAnalysis.resolved_trackers || [])
     : (privacy.trackers || []).map((item) => ({

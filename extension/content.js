@@ -105,24 +105,21 @@
         /\bfalse\s*urgency\b/i,
         /only\s*(\d+|one|two|three|few|several)\s*(left|remaining|in stock|available|spots)/i,
         /hurry[!,\s]*only/i,
-        /selling\s*out|sold\s*out/i,
         /selling\s*fast|going\s*fast/i,
-        /limited\s*(time|offer|stock|quantity|edition|seats|availability)/i,
+        /limited\s*time\s*(offer|deal|sale)/i,
+        /limited\s*(stock|quantity|seats|availability)/i,
         /(\d+)\s*people\s*(are\s*)?(viewing|watching|looking at|browsing|interested)/i,
         /sale\s*ends?\s*(in|at|tonight|today|tomorrow|soon)/i,
         /(\d+)\s*(hours?|mins?|minutes?|seconds?)\s*(left|remaining|till|until)/i,
-        /don'?t\s*miss\s*(out|this|the)/i,
         /last\s*(chance|opportunity|few|day|hours?|minute)/i,
         /ends?\s*(tonight|today|noon|midnight|soon|very soon)/i,
-        /act\s*now/i,
         /before\s*(it's?\s*)?(gone|sold out)/i,
         /countdown\s*timer|timer\s*countdown/i,
-        /offer\s*expires?/i,
+        /offer\s*expires?\s*(in|at|today|tonight|soon)/i,
         /\d+%\s*off.*only.*today/i,
-        /flash\s*sale/i,
-        /exclusive.*limited/i,
-        /buy\s*now/i,
-        /(?:almost|nearly|almost all)\s*(?:gone|sold out|sold)/i,
+        /flash\s*sale\s*(ends?|live|now|alert|deal)/i,
+        /exclusive.*limited.*(?:offer|deal|seats?)/i,
+        /(?:almost|nearly)\s*(?:gone|sold out|sold)/i,
       ],
     },
     sneaking: {
@@ -234,11 +231,10 @@
       description: 'Directs users toward unintended options through visual or hierarchical emphasis.',
       patterns: [
         /\bmisdirection\b/i,
-        /(?:highly\s*|most\s*|top\s*)?recommended\s*(?:plan|product|offer|choice|option)/i,
-        /best.*seller|best.*choice/i,
-        /customers?\s*(?:also\s*)?(?:like|buy|chose|prefer)/i,
-        /popular\s*(?:choice|item|product)/i,
-        /trending\s*(?:deal|offer|product|item|plan)/i,
+        /(?:highly\s*|most\s*|top\s*)?recommended\s*(?:plan|offer|choice|option)(?!\s*by|\s*seller)/i,
+        /\bbest\s+(?:value\s+)?(?:choice|pick|option|deal)\b/i,
+        /customers?\s*(?:also\s*)?(?:bought|chose|prefer)\s+(?:this|these)/i,
+        /trending\s*(?:deal|offer|item|plan)/i,
         /(?:click\s*|tap\s*)?here\s*for\s*(?:savings?|discount|deal)/i,
         /pre[\s-]?selected/i,
         /default.*(?:yes|selected|opted)/i,
@@ -253,13 +249,13 @@
       description: 'Repeatedly prompts or nags users to take an action.',
       patterns: [
         /\bnagging\b/i,
-        /(?:newsletter|subscription|notification|offer|deal|popup|modal).*(?:subscribe|sign[\s-]?up|get|receive)/i,
-        /(?:don'?t|never).*(?:show|tell|remind) .*again/i,
-        /subscribe.*newsletter|newsletter.*subscribe/i,
-        /get\s*(?:the latest|updates?|offers?|deals?|notifications?)/i,
-        /sign\s*up\s*(?:for|to)/i,
-        /stay\s*(?:updated|informed|in\s*touch)/i,
-        /join.*(?:our\s*)?(?:community|list|subscribers)/i,
+        /(?:newsletter|subscription)\s*(?:popup|modal|banner).*(?:subscribe|sign[\s-]?up)/i,
+        /(?:don'?t|never)\s+(?:show|tell|remind)\s.*?again/i,
+        /subscribe.*(?:to\s+our\s+)?newsletter|newsletter.*subscribe/i,
+        /(?:allow|enable)\s+(?:push\s+)?notifications?\s+(?:to|for)\s/i,
+        /sign\s*up\s*(?:for|to)\s+(?:our|exclusive|free)\s+(?:newsletter|offers?|alerts?)/i,
+        /stay\s+(?:updated|informed|in\s+touch)\s+(?:with|on)\s+our/i,
+        /join\s+(?:over\s+)?\d+.*(?:subscribers?|members?)/i,
       ],
     },
     obstruction: {
@@ -664,8 +660,12 @@
         const matchedCandidate = candidates.find((candidate) => regex.test(candidate.text));
         if (matchedCandidate) {
           const sampleText = getPatternSample(matchedCandidate.text, regex) || matchedCandidate.text.slice(0, 100).trim();
-          const confidence = Math.min(0.97, (matchedCandidate.contextScore || 0.7) + (matchedCandidate.element ? 0.08 : 0));
-          upsertPattern(type, config, sampleText, matchedCandidate.element, confidence);
+          // Skip candidates whose element is document.body (too broad — about/description blocks).
+          const candidateElement = (matchedCandidate.element && matchedCandidate.element !== document.body)
+            ? matchedCandidate.element
+            : null;
+          const confidence = Math.min(0.97, (matchedCandidate.contextScore || 0.7) + (candidateElement ? 0.08 : 0));
+          upsertPattern(type, config, sampleText, candidateElement, confidence);
           return;
         }
 
@@ -674,12 +674,15 @@
         const bodyMatch = normalizedBodyText.match(regex);
         if (!bodyMatch) return;
 
-        const anchorElement = findElementContaining(regex) || document.body;
+        // Try to find a focused anchor element; skip if match lives only in a long about/description block.
+        const anchorElement = findElementContaining(regex);
+        if (!anchorElement) return; // Don't fall back to document.body for body-text-only matches.
+
+        const anchorText = normalizeScanText(anchorElement.textContent || '');
+        if (anchorText.length > 600) return; // Skip large about/SEO text blocks.
+
         const sampleText = (bodyMatch[0] || getPatternSample(normalizedBodyText, regex) || normalizedBodyText.slice(0, 120)).slice(0, 120);
-        const fallbackConfidence = Math.min(
-          0.84,
-          (config.severity === 'high' ? 0.72 : 0.66) + (anchorElement && anchorElement !== document.body ? 0.05 : 0),
-        );
+        const fallbackConfidence = Math.min(0.84, (config.severity === 'high' ? 0.72 : 0.66) + 0.05);
 
         upsertPattern(type, config, sampleText, anchorElement, fallbackConfidence);
       });
@@ -833,16 +836,32 @@
   }
 
   function detectStickyBanners() {
-    const stickyBanners = Array.from(document.querySelectorAll('[style*="position"][style*="sticky"], [style*="position"][style*="fixed"]')).filter(el => {
-      const text = (el.textContent || '').toLowerCase();
-      const hasUrgency = text.match(/urgent|hurry|now|limited|only|ends?|sale|offer|deal|buy|subscribe|sign up/i);
-      const isVisible = el.offsetHeight > 0 && window.getComputedStyle(el).display !== 'none';
-      const notTooLarge = el.offsetHeight < 400;
-      return isVisible && hasUrgency && notTooLarge;
+    const stickyBanners = Array.from(document.querySelectorAll('header, nav, div, section, aside')).filter(el => {
+      const style = window.getComputedStyle(el);
+      const isSticky = style.position === 'sticky' || style.position === 'fixed';
+      if (!isSticky) return false;
+
+      const text = normalizeScanText(el.textContent || '');
+      if (!text || text.length < 12 || text.length > 260) return false;
+
+      const hasStrongUrgency = /\bonly\s+\d+\s+(left|remaining|in\s*stock)|\bhurry\b|\blast\s*chance\b|\bends?\s+(today|tonight|soon|in\s*\d+)|\boffer\s*expires?\b|\bflash\s*sale\b|\bcountdown\b/.test(text);
+      if (!hasStrongUrgency) return false;
+
+      const isLikelyNavigation = /\b(for\s*you|fashion|mobiles?|beauty|electronics|home|appliances|grocery|travel|search\s*for\s*products?)\b/.test(text)
+        || /\bmenu\b|\bcategories\b|\baccount\b|\bcart\b/.test(text);
+      if (isLikelyNavigation) return false;
+
+      const hasClickableCta = !!el.querySelector('button, a[href], [role="button"]');
+      if (!hasClickableCta) return false;
+
+      const rect = el.getBoundingClientRect();
+      const isVisible = rect.width > 120 && rect.height > 20 && rect.height < 220 && style.display !== 'none' && style.visibility !== 'hidden';
+      return isVisible;
     });
 
     if (stickyBanners.length > 0) {
-      const existing = state.patterns.find(p => p.type === 'urgency' && p.text === 'Sticky Banner');
+      const bannerText = normalizeScanText(stickyBanners[0]?.textContent || '').slice(0, 120) || 'Sticky Banner';
+      const existing = state.patterns.find(p => p.type === 'urgency' && p.name === 'Sticky Urgency Banner');
       if (!existing) {
         state.patterns.push({
           type: 'urgency',
@@ -853,7 +872,7 @@
           penalty: DARK_PATTERNS.urgency.penalty,
           description: 'Persistent banner with urgency language designed to distract and pressure.',
           element: stickyBanners[0],
-          text: 'Sticky Banner',
+          text: bannerText,
         });
       }
       stickyBanners.slice(0, 2).forEach(el => applyOverlay(el, 'manipulation', 'Sticky Urgency Banner'));
@@ -896,36 +915,46 @@
   }
 
   function detectDifficultCancellation() {
-    const bodyText = (document.body?.innerText || '').toLowerCase();
-    const hasSubscription = bodyText.match(/subscribe|newsletter|unsubscribe|membership|account/i);
-    
-    if (hasSubscription) {
-      const cancelLinks = document.querySelectorAll('[href*="unsubscribe"], [href*="cancel"], [href*="delete"]');
-      const cancelButtons = document.querySelectorAll('button[aria-label*="cancel" i], button[title*="cancel" i], button[aria-label*="unsubscribe" i]');
-      
-      const allCancelElements = Array.from([...cancelLinks, ...cancelButtons]);
-      const isBuried = allCancelElements.length === 0 || allCancelElements.every(el => {
-        const rect = el.getBoundingClientRect();
-        return rect.height < 15 || rect.width < 30 || window.getComputedStyle(el).display === 'none';
-      });
+    const pathname = (window.location.pathname || '').toLowerCase();
+    const isLikelyAccountArea = /account|subscription|billing|membership|settings|profile|manage/.test(pathname);
+    const bodyText = normalizeScanText(document.body?.innerText || '');
 
-      if (isBuried && hasSubscription) {
-        const existing = state.patterns.find(p => p.type === 'obstruction' && p.text === 'Difficult Cancellation');
-        if (!existing) {
-          state.patterns.push({
-            type: 'obstruction',
-            name: 'Difficult Cancellation',
-            severity: 'high',
-            confidence: 0.75,
-            law: DARK_PATTERNS.obstruction.law,
-            penalty: DARK_PATTERNS.obstruction.penalty,
-            description: 'Unsubscribe or cancel button is hidden, buried, or non-functional.',
-            element: allCancelElements[0] || document.body,
-            text: 'Difficult Cancellation',
-          });
-        }
-      }
-    }
+    const hasSubscriptionCue = /\b(subscription|membership|auto\s*renew|trial|plan\b|billing)\b/.test(bodyText);
+    const hasObstructionCue = /\b(to\s*cancel\s*(call|contact|email|chat)|cannot\s*cancel\s*online|cancel\s*via\s*customer\s*care|speak\s*to\s*an\s*agent|visit\s*branch\s*to\s*cancel)\b/.test(bodyText);
+
+    if (!hasSubscriptionCue) return;
+    if (!isLikelyAccountArea && !hasObstructionCue) return;
+
+    const candidateContainers = Array.from(document.querySelectorAll('section, article, form, div, li')).filter((el) => {
+      if (!isElementVisibleForDetection(el)) return false;
+      const text = normalizeScanText(el.textContent || '');
+      if (text.length < 30 || text.length > 420) return false;
+      const hasCancelKeyword = /\b(cancel|unsubscribe|delete\s*account|close\s*account)\b/.test(text);
+      const hasFrictionKeyword = /\b(call|contact|email|support|agent|customer\s*care|offline|visit\b|cannot\s*online)\b/.test(text);
+      const isPolicyOnly = /\b(faq|consumer\s*policy|returns?|terms\s*of\s*use|privacy\s*policy|shipping\s*policy)\b/.test(text);
+      return hasCancelKeyword && hasFrictionKeyword && !isPolicyOnly;
+    });
+
+    if (candidateContainers.length === 0) return;
+
+    const best = candidateContainers[0];
+    const sampleText = normalizeScanText(best.textContent || '').slice(0, 140);
+    const existing = state.patterns.find(p => p.type === 'obstruction' && p.text === sampleText);
+    if (existing) return;
+
+    state.patterns.push({
+      type: 'obstruction',
+      name: 'Difficult Cancellation',
+      severity: 'high',
+      confidence: 0.82,
+      law: DARK_PATTERNS.obstruction.law,
+      penalty: DARK_PATTERNS.obstruction.penalty,
+      description: 'Cancellation appears to require extra-friction steps (contact/support/agent route).',
+      element: best,
+      text: sampleText,
+    });
+
+    applyOverlay(best, 'manipulation', 'Difficult Cancellation');
   }
 
   function detectEcommercePricingManipulation() {
@@ -1979,7 +2008,7 @@
       ? `${preferredTag}, ${baseSelector}`
       : baseSelector;
 
-    const candidates = document.querySelectorAll(selector);
+    const candidates = Array.from(document.querySelectorAll(selector)).reverse();
     const scanLimit = Math.min(candidates.length, 2600);
     const tokens = normalizedSnippet
       .split(/\s+/)
@@ -2780,13 +2809,13 @@
   function detectUrgencyPatterns() {
     const scarcityPatterns = [
       /only\s*(\d+|one|two|three|few|several)\s*(left|remaining|in stock|available|spots)/i,
-      /selling\s*out|sold\s*out/i,
       /(\d+)\s*people\s*(are\s*)?(viewing|watching|looking at|browsing|interested)/i,
       /(\d+)\s*(hours?|mins?|minutes?|seconds?)\s*(left|remaining|till|until)/i,
-      /limited\s*(time|offer|stock|quantity)/i,
+      /limited\s*time\s*(offer|deal|sale)/i,
+      /limited\s*(stock|quantity|seats|availability)/i,
       /last\s*(chance|opportunity|few|day)/i,
       /hurry[!,\s]*only/i,
-      /fast\s*selling/i,
+      /selling\s*fast|going\s*fast/i,
     ];
 
     const bodyText = document.body.innerText || '';
